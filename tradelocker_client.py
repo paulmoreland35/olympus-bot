@@ -129,10 +129,10 @@ class TradeLockerClient:
     # Instruments
     # ------------------------------------------------------------------
 
-    def get_instrument_id(self, symbol: str) -> tuple[int, int]:
+    def get_instrument_id(self, symbol: str) -> tuple[int, int, int]:
         """
-        Look up instrument ID and TRADE route ID by symbol name.
-        Returns (instrumentId, routeId).
+        Look up instrument details by symbol name.
+        Returns (tradableInstrumentId, instrumentId, routeId).
         """
         url = f"{self.base_url}/trade/accounts/{self.account_id}/instruments"
         resp = self.session.get(url, timeout=15)
@@ -145,7 +145,8 @@ class TradeLockerClient:
         for inst in instruments:
             inst_name = str(inst.get("name", "")).upper()
             if inst_name == symbol_upper:
-                inst_id = int(inst.get("id", 0))
+                tradable_id = int(inst.get("tradableInstrumentId", 0))
+                inst_id     = int(inst.get("id", 0))
 
                 # Find TRADE route from routes list
                 routes = inst.get("routes", [])
@@ -158,8 +159,11 @@ class TradeLockerClient:
                 if trade_route_id is None:
                     raise ValueError(f"No TRADE route found for instrument '{symbol}'")
 
-                logger.info(f"Instrument found: {symbol} id={inst_id} routeId={trade_route_id}")
-                return inst_id, trade_route_id
+                logger.info(
+                    f"Instrument: {symbol} tradableId={tradable_id} "
+                    f"id={inst_id} routeId={trade_route_id}"
+                )
+                return tradable_id, inst_id, trade_route_id
 
         raise ValueError(
             f"Instrument '{symbol}' not found. "
@@ -191,17 +195,18 @@ class TradeLockerClient:
         Returns:
             API response dict
         """
-        instrument_id, route_id = self.get_instrument_id(symbol)
+        tradable_id, instrument_id, route_id = self.get_instrument_id(symbol)
 
         url = f"{self.base_url}/trade/accounts/{self.account_id}/orders"
 
         payload = {
-            "instrumentId": instrument_id,
-            "routeId":      route_id,
-            "qty":          round(qty, 2),
-            "side":         side.lower(),
-            "type":         "market",
-            "validity":     "GTC",
+            "tradableInstrumentId": tradable_id,
+            "instrumentId":         instrument_id,
+            "routeId":              route_id,
+            "qty":                  round(qty, 2),
+            "side":                 side.lower(),
+            "type":                 "market",
+            "validity":             "GTC",
         }
 
         if stop_loss and stop_loss > 0:
