@@ -4,15 +4,14 @@ Olympus → TradeLocker Webhook Server
 Receives TradingView alerts and places trades on TradeLocker with
 automatic 2% risk-based position sizing.
 
-Expected JSON payload from TradingView alert:
+TradingView alert message format (just paste {{alert.message}}):
 {
-  "secret":  "YOUR_WEBHOOK_SECRET",   ← security token
-  "action":  "buy" | "sell",          ← trade direction
-  "ticker":  "EURUSD",                ← symbol (use {{ticker}} in TV)
-  "price":   1.08500,                 ← entry price (use {{close}} in TV)
-  "sl":      1.07800,                 ← stop loss price  (0 = use default)
-  "tp":      1.09500                  ← take profit price (0 = skip)
+  "secret": "olympus_paul_2024",
+  "raw":    "{{alert.message}}"
 }
+
+Olympus sends everything needed in its message:
+  🚀 BUY GBPUSD | 1 | 01:19 | ENTRY: 1.359 | SL: 1.355 | TP1: 1.363 | TP2: 1.366 | TP3: 1.379 | R:R 1:1
 """
 
 import logging
@@ -23,6 +22,7 @@ from dotenv import load_dotenv
 
 from tradelocker_client import TradeLockerClient
 from risk import calculate_lots, calculate_default_sl
+from parser import parse_olympus_message
 
 # ------------------------------------------------------------------
 # Setup
@@ -41,13 +41,13 @@ app = Flask(__name__)
 # Config from .env
 # ------------------------------------------------------------------
 
-TL_BASE_URL      = os.getenv("TL_BASE_URL",      "https://members.livvfxtrading.com/backend-api")
-TL_EMAIL         = os.getenv("TL_EMAIL",          "")
-TL_PASSWORD      = os.getenv("TL_PASSWORD",       "")
-TL_SERVER        = os.getenv("TL_SERVER",         "LIVVFX")
-WEBHOOK_SECRET   = os.getenv("WEBHOOK_SECRET",    "")
-RISK_PCT         = float(os.getenv("RISK_PCT",    "0.02"))    # 2%
-DEFAULT_SL_PCT   = float(os.getenv("DEFAULT_SL_PCT", "0.01")) # 1% fallback SL
+TL_BASE_URL    = os.getenv("TL_BASE_URL",      "https://live.tradelocker.com/backend-api")
+TL_EMAIL       = os.getenv("TL_EMAIL",          "")
+TL_PASSWORD    = os.getenv("TL_PASSWORD",       "")
+TL_SERVER      = os.getenv("TL_SERVER",         "LIVVFX")
+WEBHOOK_SECRET = os.getenv("WEBHOOK_SECRET",    "")
+RISK_PCT       = float(os.getenv("RISK_PCT",    "0.02"))
+DEFAULT_SL_PCT = float(os.getenv("DEFAULT_SL_PCT", "0.01"))
 
 # ------------------------------------------------------------------
 # Health check
@@ -63,7 +63,8 @@ def health():
 
 @app.route("/webhook", methods=["POST"])
 def webhook():
-    # 1. Parse JSON
+
+    # 1. Parse JSON body
     data = request.get_json(silent=True)
     if not data:
         logger.warning("Received non-JSON request.")
@@ -73,23 +74,46 @@ def webhook():
 
     # 2. Verify secret
     if WEBHOOK_SECRET and data.get("secret") != WEBHOOK_SECRET:
-        logger.warning("Webhook secret mismatch — request rejected.")
+        logger.warning("Webhook secret mismatch — rejected.")
         return jsonify({"error": "Unauthorized"}), 401
 
-    # 3. Extract fields
-    action = str(data.get("action", "")).lower().strip()
-    ticker = str(data.get("ticker", "")).upper().strip()
-    price  = float(data.get("price", 0))
-    sl     = float(data.get("sl",    0))
-    tp     = float(data.get("tp",    0))
+    # 3. Parse Olympus message  ─────────────────────────────────────
+    #    Supports two formats:
+    #    A) {"secret":..., "raw": "{{alert.message}}"}   ← preferred
+    #    B) {"secret":..., "action":"buy", "ticker":..., "price":..., "sl":..., "tp":...}
+    # ──────────────────────────────────────────────────────────────
 
-    # 4. Validate required fields
+    raw = data.get("raw", "").strip()
+
+    if raw:
+        # Format A — parse full Olympus message
+        try:
+            parsed = parse_olympus_message(raw)
+        except ValueError as e:
+            logger.error(f"Message parse error: {e}")
+            return jsonify({"error": "Could not parse Olympus message", "detail": str(e)}), 400
+
+        action = parsed["action"]
+        ticker = parsed["ticker"]
+        entry  = parsed["entry"]
+        sl     = parsed["sl"]
+        tp1    = parsed["tp1"]
+
+    else:
+        # Format B — manual JSON fields (legacy / testing)
+        action = str(data.get("action", "")).lower().strip()
+        ticker = str(data.get("ticker", "")).upper().strip()
+        entry  = float(data.get("price", 0))
+        sl     = float(data.get("sl",    0))
+        tp1    = float(data.get("tp",    0))
+
+    # 4. Validate
     if action not in ("buy", "sell"):
-        return jsonify({"error": f"Invalid action '{action}'. Must be 'buy' or 'sell'."}), 400
+        return jsonify({"error": f"Invalid action '{action}'"}), 400
     if not ticker:
-        return jsonify({"error": "Missing 'ticker' field."}), 400
-    if price <= 0:
-        return jsonify({"error": "Invalid or missing 'price' field."}), 400
+        return jsonify({"error": "Missing ticker"}), 400
+    if entry <= 0:
+        return jsonify({"error": "Invalid entry price"}), 400
 
     # 5. Connect to TradeLocker
     try:
@@ -108,16 +132,16 @@ def webhook():
     balance = client.get_balance()
     logger.info(f"Account balance: ${balance:,.2f}")
 
-    # 7. Determine stop loss
-    if sl <= 0:
-        sl = calculate_default_sl(price, action, DEFAULT_SL_PCT)
-        logger.info(f"No SL in alert — using default SL: {sl}")
+    # 7. Fallback SL if missing
+    if not sl or sl <= 0:
+        sl = calculate_default_sl(entry, action, DEFAULT_SL_PCT)
+        logger.info(f"Using default SL: {sl}")
 
-    # 8. Calculate position size (2% risk)
+    # 8. Calculate lot size (2% risk)
     try:
         lots = calculate_lots(
             balance=balance,
-            entry_price=price,
+            entry_price=entry,
             stop_loss_price=sl,
             risk_pct=RISK_PCT,
         )
@@ -126,32 +150,32 @@ def webhook():
         return jsonify({"error": "Position sizing failed", "detail": str(e)}), 400
 
     logger.info(
-        f"Trade decision: {action.upper()} {ticker} | "
-        f"Lots: {lots} | Entry: {price} | SL: {sl} | TP: {tp or 'none'}"
+        f"Trade: {action.upper()} {ticker} | "
+        f"Lots: {lots} | Entry: {entry} | SL: {sl} | TP1: {tp1}"
     )
 
-    # 9. Place order
+    # 9. Place order with SL and TP1
     try:
         order = client.place_market_order(
             symbol=ticker,
             side=action,
             qty=lots,
             stop_loss=sl,
-            take_profit=tp if tp > 0 else None,
+            take_profit=tp1 if tp1 and tp1 > 0 else None,
         )
     except Exception as e:
-        logger.error(f"Order placement failed: {e}")
+        logger.error(f"Order failed: {e}")
         return jsonify({"error": "Order failed", "detail": str(e)}), 502
 
-    # 10. Return success
+    # 10. Success response
     response = {
         "status":  "order_placed",
         "ticker":  ticker,
         "action":  action,
         "lots":    lots,
-        "entry":   price,
+        "entry":   entry,
         "sl":      sl,
-        "tp":      tp or None,
+        "tp1":     tp1,
         "balance": balance,
         "risked":  round(balance * RISK_PCT, 2),
         "order":   order,
