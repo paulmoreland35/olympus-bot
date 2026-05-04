@@ -16,10 +16,33 @@ import logging
 logger = logging.getLogger(__name__)
 
 # Broker constraints
-MIN_LOT = 0.01
-MAX_LOT = 100.0
-LOT_STEP = 0.01          # Round to nearest 0.01
-CONTRACT_SIZE = 100_000  # Standard forex lot
+MIN_LOT  = 0.01
+MAX_LOT  = 100.0
+LOT_STEP = 0.01
+
+# Contract sizes per instrument type
+# dollar_risk_per_lot = sl_distance × contract_size
+CONTRACT_SIZES = {
+    # Forex (standard lot = 100,000 units)
+    "DEFAULT": 100_000,
+    # Gold / Silver
+    "XAUUSD":  100,      # 100 troy oz per lot
+    "XAGUSD":  5_000,    # 5,000 oz per lot
+    # Indices (CFD — typically $10 per point per lot)
+    "NAS100":  10,
+    "US100":   10,
+    "NDX":     10,
+    "US30":    10,
+    "DJ30":    10,
+    "WS30":    10,
+    "SPX500":  10,
+    "US500":   10,
+}
+
+
+def _contract_size(ticker: str) -> int:
+    """Return the contract size for a given symbol."""
+    return CONTRACT_SIZES.get(ticker.upper(), CONTRACT_SIZES["DEFAULT"])
 
 
 def calculate_lots(
@@ -27,6 +50,7 @@ def calculate_lots(
     entry_price: float,
     stop_loss_price: float,
     risk_pct: float = 0.02,
+    ticker: str = "",
 ) -> float:
     """
     Calculate position size in lots based on account risk.
@@ -51,18 +75,19 @@ def calculate_lots(
     if sl_distance == 0:
         raise ValueError("Stop loss price cannot equal entry price.")
 
-    risk_amount = balance * risk_pct
-    dollar_per_lot = sl_distance * CONTRACT_SIZE
-    raw_lots = risk_amount / dollar_per_lot
+    risk_amount    = balance * risk_pct
+    contract_size  = _contract_size(ticker)
+    dollar_per_lot = sl_distance * contract_size
+    raw_lots       = risk_amount / dollar_per_lot
 
     # Round down to nearest lot step (conservative — never risk more than 2%)
     lots = _floor_to_step(raw_lots, LOT_STEP)
     lots = max(MIN_LOT, min(MAX_LOT, lots))
 
     logger.info(
-        f"Risk calc: balance={balance:.2f} | risk={risk_amount:.2f} | "
-        f"entry={entry_price} | sl={stop_loss_price} | "
-        f"sl_dist={sl_distance:.5f} | raw_lots={raw_lots:.4f} | final_lots={lots:.2f}"
+        f"Risk calc [{ticker}]: balance={balance:.2f} | risk={risk_amount:.2f} | "
+        f"entry={entry_price} | sl={stop_loss_price} | sl_dist={sl_distance:.5f} | "
+        f"contract={contract_size} | raw_lots={raw_lots:.4f} | final_lots={lots:.2f}"
     )
 
     return lots

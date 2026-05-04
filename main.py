@@ -144,6 +144,7 @@ def webhook():
             entry_price=entry,
             stop_loss_price=sl,
             risk_pct=RISK_PCT,
+            ticker=ticker,
         )
     except Exception as e:
         logger.error(f"Position sizing error: {e}")
