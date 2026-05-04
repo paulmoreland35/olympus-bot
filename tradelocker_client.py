@@ -1,6 +1,13 @@
 """
 TradeLocker REST API Client
 Handles authentication, account info, instrument lookup, and order placement.
+
+Key discoveries from live API inspection:
+  - Auth endpoint returns accountBalance (not balance)
+  - Trade URLs use account "id" (e.g. 682270), not accNum
+  - accNum (e.g. "1") goes in the request HEADER
+  - Instruments are dicts with id, name, routes: [{id, type}]
+  - TRADE route is the one with type == "TRADE"
 """
 
 import requests
@@ -19,8 +26,8 @@ class TradeLockerClient:
 
         self.access_token: Optional[str] = None
         self.refresh_token: Optional[str] = None
-        self.account_id: Optional[str] = None
-        self.acc_num: Optional[int] = None
+        self.account_id: Optional[str] = None   # used in URL paths (e.g. "682270")
+        self.acc_num: Optional[str] = None       # used in accNum header (e.g. "1")
         self.balance: float = 0.0
 
         self.session = requests.Session()
@@ -66,47 +73,56 @@ class TradeLockerClient:
     # ------------------------------------------------------------------
 
     def _load_account(self):
-        """Fetch accounts and set primary account ID, accNum, and balance."""
+        """Fetch accounts and cache account_id, acc_num, and balance."""
         url = f"{self.base_url}/auth/jwt/all-accounts"
         resp = self.session.get(url, timeout=10)
         resp.raise_for_status()
         data = resp.json()
 
-        # Handle both list and wrapped response
         accounts = data if isinstance(data, list) else data.get("accounts", [])
-
         if not accounts:
             raise ValueError("No accounts found on this TradeLocker profile.")
 
-        # Pick first live account
         account = accounts[0]
-        self.account_id = str(account.get("id") or account.get("accountId", ""))
-        self.acc_num = int(account.get("accNum") or account.get("accountNumber", 0))
-        self.balance = float(account.get("balance", 0.0))
 
-        # Update session with accNum header (required for trade endpoints)
-        self.session.headers.update({"accNum": str(self.acc_num)})
+        # "id" is used in URL paths; "accNum" goes in the request header
+        self.account_id = str(account.get("id", ""))
+        self.acc_num    = str(account.get("accNum", "1"))
+
+        # Balance field is "accountBalance" in the live API
+        self.balance = float(
+            account.get("accountBalance")
+            or account.get("balance")
+            or account.get("equity")
+            or 0.0
+        )
+
+        # Set accNum header — required for all trade endpoints
+        self.session.headers.update({"accNum": self.acc_num})
 
         logger.info(
-            f"Account loaded — ID: {self.account_id} | accNum: {self.acc_num} | Balance: {self.balance}"
+            f"Account loaded — id: {self.account_id} | accNum: {self.acc_num} | "
+            f"balance: ${self.balance:,.2f}"
         )
 
     def get_balance(self) -> float:
         """Refresh and return current account balance."""
-        url = f"{self.base_url}/trade/accounts/{self.acc_num}/accountDetails"
         try:
+            url = f"{self.base_url}/auth/jwt/all-accounts"
             resp = self.session.get(url, timeout=10)
             resp.raise_for_status()
             data = resp.json()
-            # TradeLocker wraps data in 'd' key
-            details = data.get("d", data)
-            self.balance = float(
-                details.get("balance")
-                or details.get("equity")
-                or self.balance
-            )
+            accounts = data if isinstance(data, list) else data.get("accounts", [])
+            if accounts:
+                account = accounts[0]
+                self.balance = float(
+                    account.get("accountBalance")
+                    or account.get("balance")
+                    or account.get("equity")
+                    or self.balance
+                )
         except Exception as e:
-            logger.warning(f"Could not refresh balance, using cached value: {e}")
+            logger.warning(f"Could not refresh balance, using cached ${self.balance:,.2f}: {e}")
         return self.balance
 
     # ------------------------------------------------------------------
@@ -115,31 +131,40 @@ class TradeLockerClient:
 
     def get_instrument_id(self, symbol: str) -> tuple[int, int]:
         """
-        Look up instrument ID and routeId by symbol name.
+        Look up instrument ID and TRADE route ID by symbol name.
         Returns (instrumentId, routeId).
         """
-        url = f"{self.base_url}/trade/accounts/{self.acc_num}/instruments"
-        resp = self.session.get(url, timeout=10)
+        url = f"{self.base_url}/trade/accounts/{self.account_id}/instruments"
+        resp = self.session.get(url, timeout=15)
         resp.raise_for_status()
         data = resp.json()
 
-        instruments = data.get("d", {}).get("instruments", data if isinstance(data, list) else [])
-
+        instruments = data.get("d", {}).get("instruments", [])
         symbol_upper = symbol.upper()
-        for inst in instruments:
-            # Instrument rows are often arrays: [id, name, ..., routeId]
-            if isinstance(inst, list):
-                inst_name = str(inst[2]).upper() if len(inst) > 2 else ""
-                if inst_name == symbol_upper or symbol_upper in inst_name:
-                    return int(inst[0]), int(inst[-1])
-            elif isinstance(inst, dict):
-                inst_name = str(inst.get("name", inst.get("symbol", ""))).upper()
-                if inst_name == symbol_upper or symbol_upper in inst_name:
-                    return int(inst.get("id", inst.get("instrumentId", 0))), int(
-                        inst.get("routeId", inst.get("route", 0))
-                    )
 
-        raise ValueError(f"Instrument '{symbol}' not found on this account.")
+        for inst in instruments:
+            inst_name = str(inst.get("name", "")).upper()
+            if inst_name == symbol_upper:
+                inst_id = int(inst.get("id", 0))
+
+                # Find TRADE route from routes list
+                routes = inst.get("routes", [])
+                trade_route_id = None
+                for route in routes:
+                    if isinstance(route, dict) and route.get("type") == "TRADE":
+                        trade_route_id = int(route["id"])
+                        break
+
+                if trade_route_id is None:
+                    raise ValueError(f"No TRADE route found for instrument '{symbol}'")
+
+                logger.info(f"Instrument found: {symbol} id={inst_id} routeId={trade_route_id}")
+                return inst_id, trade_route_id
+
+        raise ValueError(
+            f"Instrument '{symbol}' not found. "
+            f"Check the symbol name exactly as shown in TradeLocker."
+        )
 
     # ------------------------------------------------------------------
     # Orders
@@ -168,15 +193,15 @@ class TradeLockerClient:
         """
         instrument_id, route_id = self.get_instrument_id(symbol)
 
-        url = f"{self.base_url}/trade/accounts/{self.acc_num}/orders"
+        url = f"{self.base_url}/trade/accounts/{self.account_id}/orders"
 
         payload = {
             "instrumentId": instrument_id,
-            "routeId": route_id,
-            "qty": round(qty, 2),
-            "side": side.lower(),
-            "type": "market",
-            "validity": "GTC",
+            "routeId":      route_id,
+            "qty":          round(qty, 2),
+            "side":         side.lower(),
+            "type":         "market",
+            "validity":     "GTC",
         }
 
         if stop_loss and stop_loss > 0:
@@ -189,12 +214,11 @@ class TradeLockerClient:
         resp = self.session.post(url, json=payload, timeout=10)
 
         if resp.status_code == 401:
-            # Token expired — refresh and retry once
-            logger.info("Token expired, refreshing...")
+            logger.info("Token expired — refreshing and retrying...")
             self.refresh_access_token()
             resp = self.session.post(url, json=payload, timeout=10)
 
         resp.raise_for_status()
         result = resp.json()
-        logger.info(f"Order placed successfully: {result}")
+        logger.info(f"Order placed: {result}")
         return result
