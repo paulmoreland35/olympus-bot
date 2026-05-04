@@ -210,9 +210,11 @@ class TradeLockerClient:
         }
 
         if stop_loss and stop_loss > 0:
-            payload["stopLoss"] = round(stop_loss, 5)
+            payload["stopLoss"]     = round(stop_loss, 5)
+            payload["stopLossType"] = "absolute"
         if take_profit and take_profit > 0:
-            payload["takeProfit"] = round(take_profit, 5)
+            payload["takeProfit"]     = round(take_profit, 5)
+            payload["takeProfitType"] = "absolute"
 
         logger.info(f"Placing order: {payload}")
 
