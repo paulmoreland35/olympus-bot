@@ -206,7 +206,7 @@ class TradeLockerClient:
             "qty":                  round(qty, 2),
             "side":                 side.lower(),
             "type":                 "market",
-            "validity":             "GTC",
+            "validity":             "IOC",
         }
 
         if stop_loss and stop_loss > 0:
