@@ -12,6 +12,21 @@ import logging
 
 logger = logging.getLogger(__name__)
 
+# Maps TradingView symbol names → TradeLocker/LIVVFX symbol names
+SYMBOL_MAP = {
+    "NAS100":   "NDXUSD",
+    "US100":    "NDXUSD",
+    "NASDAQ":   "NDXUSD",
+    "US30":     "DJIUSD",
+    "DJ30":     "DJIUSD",
+    "WS30":     "DJIUSD",
+    "DOW":      "DJIUSD",
+    # Gold/Silver already match
+    "XAUUSD":   "XAUUSD",
+    "XAGUSD":   "XAGUSD",
+    # Forex already matches
+}
+
 
 def parse_olympus_message(message: str) -> dict:
     """
@@ -54,6 +69,13 @@ def parse_olympus_message(message: str) -> dict:
     if not symbol_match:
         raise ValueError(f"Could not find symbol in message: {msg}")
     ticker = symbol_match.group(1).upper()
+
+    # Remap TradingView symbol → TradeLocker symbol if needed
+    if ticker in SYMBOL_MAP:
+        mapped = SYMBOL_MAP[ticker]
+        if mapped != ticker:
+            logger.info(f"Symbol remapped: {ticker} → {mapped}")
+        ticker = mapped
 
     # ---- Entry price ------------------------------------------------------
     entry_match = re.search(r'ENTRY[:\s]+([\d.]+)', msg, re.IGNORECASE)

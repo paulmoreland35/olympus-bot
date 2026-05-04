@@ -28,7 +28,9 @@ CONTRACT_SIZES = {
     # Gold / Silver
     "XAUUSD":  100,      # 100 troy oz per lot
     "XAGUSD":  5_000,    # 5,000 oz per lot
-    # Indices (CFD — typically $10 per point per lot)
+    # Indices (CFD — $10 per point per lot)
+    "NDXUSD":  10,   # NAS100 on LIVVFX
+    "DJIUSD":  10,   # US30 on LIVVFX
     "NAS100":  10,
     "US100":   10,
     "NDX":     10,
