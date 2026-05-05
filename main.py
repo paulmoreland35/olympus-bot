@@ -156,18 +156,26 @@ def webhook():
         sl = calculate_default_sl(entry, action, DEFAULT_SL_PCT)
         logger.info(f"Using default SL: {sl}")
 
-    # 8. Calculate lot size (2% risk)
-    try:
-        lots = calculate_lots(
-            balance=balance,
-            entry_price=entry,
-            stop_loss_price=sl,
-            risk_pct=RISK_PCT,
-            ticker=ticker,
-        )
-    except Exception as e:
-        logger.error(f"Position sizing error: {e}")
-        return jsonify({"error": "Position sizing failed", "detail": str(e)}), 400
+    # 8. Calculate lot size
+    #    Check for a fixed per-symbol override first (set via env var LOT_OVERRIDE_SYMBOL)
+    #    e.g. LOT_OVERRIDE_NDXUSD=0.20, LOT_OVERRIDE_DJIUSD=0.20
+    #    If no override, calculate dynamically from 2% risk and SL distance
+    lot_override_env = os.getenv(f"LOT_OVERRIDE_{ticker.upper()}")
+    if lot_override_env:
+        lots = float(lot_override_env)
+        logger.info(f"Using fixed lot override for {ticker}: {lots}")
+    else:
+        try:
+            lots = calculate_lots(
+                balance=balance,
+                entry_price=entry,
+                stop_loss_price=sl,
+                risk_pct=RISK_PCT,
+                ticker=ticker,
+            )
+        except Exception as e:
+            logger.error(f"Position sizing error: {e}")
+            return jsonify({"error": "Position sizing failed", "detail": str(e)}), 400
 
     logger.info(
         f"Trade: {action.upper()} {ticker} | "
