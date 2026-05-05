@@ -64,34 +64,57 @@ def health():
 @app.route("/webhook", methods=["POST"])
 def webhook():
 
-    # 1. Parse JSON body
+    # 1. Parse body — support 3 formats:
+    #    A) JSON: {"secret":..., "raw":"{{alert.message}}"}   ← preferred
+    #    B) JSON: {"secret":..., "action":"buy", "ticker":..., "price":..., "sl":..., "tp":...}
+    #    C) Plain text: raw Olympus message sent directly (no JSON wrapper)
+
+    raw_body = request.get_data(as_text=True).strip()
     data = request.get_json(silent=True)
-    if not data:
-        logger.warning("Received non-JSON request.")
-        return jsonify({"error": "Invalid JSON"}), 400
 
-    logger.info(f"Webhook received: {data}")
+    if data:
+        # JSON received
+        logger.info(f"Webhook received (JSON): {data}")
 
-    # 2. Verify secret
-    if WEBHOOK_SECRET and data.get("secret") != WEBHOOK_SECRET:
-        logger.warning("Webhook secret mismatch — rejected.")
-        return jsonify({"error": "Unauthorized"}), 401
+        # 2. Verify secret
+        if WEBHOOK_SECRET and data.get("secret") != WEBHOOK_SECRET:
+            logger.warning("Webhook secret mismatch — rejected.")
+            return jsonify({"error": "Unauthorized"}), 401
 
-    # 3. Parse Olympus message  ─────────────────────────────────────
-    #    Supports two formats:
-    #    A) {"secret":..., "raw": "{{alert.message}}"}   ← preferred
-    #    B) {"secret":..., "action":"buy", "ticker":..., "price":..., "sl":..., "tp":...}
-    # ──────────────────────────────────────────────────────────────
+        raw = data.get("raw", "").strip()
 
-    raw = data.get("raw", "").strip()
+        if raw:
+            # Format A — JSON wrapper with {{alert.message}}
+            try:
+                parsed = parse_olympus_message(raw)
+            except ValueError as e:
+                logger.error(f"Message parse error: {e}")
+                return jsonify({"error": "Could not parse Olympus message", "detail": str(e)}), 400
+        else:
+            # Format B — manual JSON fields
+            parsed = None
 
-    if raw:
-        # Format A — parse full Olympus message
+        if parsed:
+            action = parsed["action"]
+            ticker = parsed["ticker"]
+            entry  = parsed["entry"]
+            sl     = parsed["sl"]
+            tp1    = parsed["tp1"]
+        else:
+            action = str(data.get("action", "")).lower().strip()
+            ticker = str(data.get("ticker", "")).upper().strip()
+            entry  = float(data.get("price", 0))
+            sl     = float(data.get("sl",    0))
+            tp1    = float(data.get("tp",    0))
+
+    elif raw_body:
+        # Format C — plain text Olympus message (alert message box not yet updated to JSON)
+        logger.info(f"Webhook received (plain text): {raw_body}")
         try:
-            parsed = parse_olympus_message(raw)
+            parsed = parse_olympus_message(raw_body)
         except ValueError as e:
-            logger.error(f"Message parse error: {e}")
-            return jsonify({"error": "Could not parse Olympus message", "detail": str(e)}), 400
+            logger.error(f"Could not parse plain text message: {e}")
+            return jsonify({"error": "Could not parse message", "detail": str(e)}), 400
 
         action = parsed["action"]
         ticker = parsed["ticker"]
@@ -100,12 +123,8 @@ def webhook():
         tp1    = parsed["tp1"]
 
     else:
-        # Format B — manual JSON fields (legacy / testing)
-        action = str(data.get("action", "")).lower().strip()
-        ticker = str(data.get("ticker", "")).upper().strip()
-        entry  = float(data.get("price", 0))
-        sl     = float(data.get("sl",    0))
-        tp1    = float(data.get("tp",    0))
+        logger.warning("Empty request body received.")
+        return jsonify({"error": "Empty request"}), 400
 
     # 4. Validate
     if action not in ("buy", "sell"):
