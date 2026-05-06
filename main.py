@@ -196,6 +196,7 @@ def webhook():
         return jsonify({"error": "Order failed", "detail": str(e)}), 502
 
     # 10. Success response
+    tp_dropped = order.pop("_tp_dropped", False)
     response = {
         "status":  "order_placed",
         "ticker":  ticker,
@@ -203,12 +204,16 @@ def webhook():
         "lots":    lots,
         "entry":   entry,
         "sl":      sl,
-        "tp1":     tp1,
+        "tp1":     tp1 if not tp_dropped else None,
+        "tp_note": "TP rejected by broker (price moved) — order placed with SL only" if tp_dropped else None,
         "balance": balance,
         "risked":  round(balance * RISK_PCT, 2),
         "order":   order,
     }
-    logger.info(f"Success: {response}")
+    if tp_dropped:
+        logger.warning(f"Order placed WITHOUT TP (SL attached): {response}")
+    else:
+        logger.info(f"Success: {response}")
     return jsonify(response), 200
 
 

@@ -227,5 +227,23 @@ class TradeLockerClient:
 
         resp.raise_for_status()
         result = resp.json()
+
+        # Check for broker-side TP validation error — retry without TP
+        if result.get("s") == "error" and "TP" in result.get("errmsg", ""):
+            logger.warning(
+                f"TP rejected by broker ({result.get('errmsg')}) — "
+                f"retrying without take profit (SL still attached)."
+            )
+            payload_no_tp = {k: v for k, v in payload.items()
+                             if k not in ("takeProfit", "takeProfitType")}
+            resp2 = self.session.post(url, json=payload_no_tp, timeout=10)
+            resp2.raise_for_status()
+            result = resp2.json()
+            result["_tp_dropped"] = True  # flag so caller knows TP wasn't set
+
+        # Raise a proper exception if the broker still returns an error
+        if result.get("s") == "error":
+            raise RuntimeError(f"Broker error: {result.get('errmsg', result)}")
+
         logger.info(f"Order placed: {result}")
         return result
