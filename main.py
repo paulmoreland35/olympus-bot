@@ -16,6 +16,8 @@ Olympus sends everything needed in its message:
 
 import logging
 import os
+import time
+import threading
 
 from flask import Flask, request, jsonify
 from dotenv import load_dotenv
@@ -23,6 +25,7 @@ from dotenv import load_dotenv
 from tradelocker_client import TradeLockerClient
 from risk import calculate_lots, calculate_default_sl
 from parser import parse_olympus_message
+from trailing import TrailingStopManager
 
 # ------------------------------------------------------------------
 # Setup
@@ -49,6 +52,87 @@ WEBHOOK_SECRET = os.getenv("WEBHOOK_SECRET",    "")
 RISK_PCT       = float(os.getenv("RISK_PCT",    "0.02"))
 DEFAULT_SL_PCT = float(os.getenv("DEFAULT_SL_PCT", "0.01"))
 
+# How often the trailing loop polls open positions (seconds).
+# 10s is a good balance — responsive without hammering the API.
+TRAILING_POLL_SEC = int(os.getenv("TRAILING_POLL_SEC", "10"))
+
+# ------------------------------------------------------------------
+# Trailing stop manager (singleton shared across threads)
+# ------------------------------------------------------------------
+
+trailing_manager = TrailingStopManager()
+
+# ------------------------------------------------------------------
+# Background trailing stop loop
+# ------------------------------------------------------------------
+
+def _trailing_loop():
+    """
+    Daemon thread that wakes up every TRAILING_POLL_SEC seconds,
+    fetches all open positions from TradeLocker, and applies breakeven
+    / trailing SL moves as needed.
+
+    Works on ALL open positions — bot-placed and manual alike.
+    """
+    client = None
+
+    while True:
+        try:
+            # (Re-)authenticate when client is missing
+            if client is None:
+                if not TL_EMAIL or not TL_PASSWORD:
+                    time.sleep(TRAILING_POLL_SEC)
+                    continue
+                client = TradeLockerClient(
+                    base_url=TL_BASE_URL,
+                    email=TL_EMAIL,
+                    password=TL_PASSWORD,
+                    server=TL_SERVER,
+                )
+                client.authenticate()
+                logger.info("[Trailing] Loop client authenticated.")
+
+            positions = client.get_open_positions()
+
+            if not positions:
+                logger.debug("[Trailing] No open positions.")
+            else:
+                updates = trailing_manager.process(positions)
+                for pos_id, new_sl in updates:
+                    try:
+                        client.modify_position_sl(pos_id, new_sl)
+                    except Exception as modify_err:
+                        logger.error(
+                            f"[Trailing] Failed to update SL for position "
+                            f"{pos_id} → {new_sl}: {modify_err}"
+                        )
+
+        except Exception as e:
+            err = str(e)
+            if "401" in err or "Unauthorized" in err.lower():
+                logger.warning("[Trailing] Auth expired — re-authenticating.")
+                client = None
+            elif "429" in err or "Too Many Requests" in err.lower():
+                logger.warning("[Trailing] Rate limited — backing off 60s.")
+                time.sleep(60)
+                continue
+            elif any(x in err for x in ("502", "503", "Bad Gateway", "Service Unavailable")):
+                logger.warning(f"[Trailing] Broker server error — backing off 30s. ({err[:80]})")
+                time.sleep(30)
+                continue
+            else:
+                logger.error(f"[Trailing] Unexpected error — reinitialising client: {e}")
+                client = None
+
+        time.sleep(TRAILING_POLL_SEC)
+
+
+_trailing_thread = threading.Thread(
+    target=_trailing_loop, daemon=True, name="trailing-loop"
+)
+_trailing_thread.start()
+logger.info(f"[Trailing] Background loop started (polling every {TRAILING_POLL_SEC}s).")
+
 # ------------------------------------------------------------------
 # Health check
 # ------------------------------------------------------------------
@@ -56,6 +140,15 @@ DEFAULT_SL_PCT = float(os.getenv("DEFAULT_SL_PCT", "0.01"))
 @app.route("/", methods=["GET"])
 def health():
     return jsonify({"status": "Olympus bot is running ✓"}), 200
+
+# ------------------------------------------------------------------
+# Trailing stop status
+# ------------------------------------------------------------------
+
+@app.route("/trailing", methods=["GET"])
+def trailing_status():
+    """Shows all positions currently being trailed."""
+    return jsonify(trailing_manager.status()), 200
 
 # ------------------------------------------------------------------
 # Webhook endpoint
@@ -198,17 +291,18 @@ def webhook():
     # 10. Success response
     tp_dropped = order.pop("_tp_dropped", False)
     response = {
-        "status":  "order_placed",
-        "ticker":  ticker,
-        "action":  action,
-        "lots":    lots,
-        "entry":   entry,
-        "sl":      sl,
-        "tp1":     tp1 if not tp_dropped else None,
-        "tp_note": "TP rejected by broker (price moved) — order placed with SL only" if tp_dropped else None,
-        "balance": balance,
-        "risked":  round(balance * RISK_PCT, 2),
-        "order":   order,
+        "status":   "order_placed",
+        "ticker":   ticker,
+        "action":   action,
+        "lots":     lots,
+        "entry":    entry,
+        "sl":       sl,
+        "tp1":      tp1 if not tp_dropped else None,
+        "tp_note":  "TP rejected by broker (price moved) — order placed with SL only" if tp_dropped else None,
+        "trailing": "will activate at 50% toward TP",
+        "balance":  balance,
+        "risked":   round(balance * RISK_PCT, 2),
+        "order":    order,
     }
     if tp_dropped:
         logger.warning(f"Order placed WITHOUT TP (SL attached): {response}")

@@ -171,6 +171,87 @@ class TradeLockerClient:
         )
 
     # ------------------------------------------------------------------
+    # Positions
+    # ------------------------------------------------------------------
+
+    def get_open_positions(self) -> list[dict]:
+        """
+        Fetch all open positions and return as a list of normalised dicts.
+
+        TradeLocker returns positions in a columnar format:
+          {"d": {"columns": ["id","side",...], "data": [[...],[...]]}}
+
+        Each dict will always contain at minimum:
+          id, side, qty, openPrice, stopLoss, takeProfit, unrealisedPnl,
+          tradableInstrumentId, name (symbol)
+        """
+        url = f"{self.base_url}/trade/accounts/{self.account_id}/positions"
+        resp = self.session.get(url, timeout=15)
+        if resp.status_code == 401:
+            self.refresh_access_token()
+            resp = self.session.get(url, timeout=15)
+        resp.raise_for_status()
+        data = resp.json()
+
+        d = data.get("d", data)
+        columns = d.get("columns", [])
+        rows    = d.get("data",    [])
+
+        if columns and rows:
+            # Columnar format — zip each row with the column headers
+            positions = [dict(zip(columns, row)) for row in rows]
+        elif isinstance(d, list):
+            positions = d
+        else:
+            positions = []
+
+        # Normalise key names so the rest of the code doesn't care about
+        # minor API variations (e.g. "avgPrice" vs "openPrice")
+        normalised = []
+        for p in positions:
+            pos = dict(p)
+            # Entry price
+            if "openPrice" not in pos:
+                pos["openPrice"] = pos.get("avgPrice") or pos.get("price") or 0
+            # SL / TP — may be absent (null) on positions with no SL/TP set
+            pos["stopLoss"]   = float(pos.get("stopLoss")   or 0)
+            pos["takeProfit"] = float(pos.get("takeProfit") or 0)
+            pos["openPrice"]  = float(pos.get("openPrice")  or 0)
+            pos["qty"]        = float(pos.get("qty")        or 0)
+            pos["unrealisedPnl"] = float(pos.get("unrealisedPnl") or
+                                         pos.get("unrealizedPnl") or 0)
+            pos["side"] = str(pos.get("side", "")).lower()
+            pos["id"]   = str(pos.get("id", ""))
+            # Symbol name — may be in "name" or "symbol" field
+            if "name" not in pos:
+                pos["name"] = pos.get("symbol", "")
+            normalised.append(pos)
+
+        logger.debug(f"Fetched {len(normalised)} open positions.")
+        return normalised
+
+    def modify_position_sl(self, position_id: str, new_sl: float) -> dict:
+        """
+        Move the stop loss on an open position to new_sl.
+        Uses PUT /trade/accounts/{accountId}/positions/{positionId}.
+        """
+        url = f"{self.base_url}/trade/accounts/{self.account_id}/positions/{position_id}"
+        payload = {
+            "stopLoss":     round(new_sl, 5),
+            "stopLossType": "absolute",
+        }
+        resp = self.session.put(url, json=payload, timeout=10)
+        if resp.status_code == 401:
+            self.refresh_access_token()
+            resp = self.session.put(url, json=payload, timeout=10)
+        resp.raise_for_status()
+        result = resp.json()
+        if result.get("s") == "error":
+            raise RuntimeError(f"Broker error modifying SL: {result.get('errmsg', result)}")
+        logger.info(f"SL updated → position {position_id} new SL={new_sl}")
+        return result
+
+    # ------------------------------------------------------------------
     # Orders
     # ------------------------------------------------------------------
 
