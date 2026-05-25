@@ -1,0 +1,245 @@
+"""
+Trade Log
+---------
+Records every trade entry and exit.  Persists to a JSON file so it
+survives bot restarts (Railway ephemeral FS — resets on redeploy, but
+stays intact across crashes/restarts within a deployment).
+
+Each trade record:
+  {
+    "id":           unique string (timestamp + ticker)
+    "position_id":  TradeLocker position ID (filled in when matched)
+    "ticker":       "GBPUSD"
+    "side":         "buy" | "sell"
+    "lots":         0.02
+    "entry":        1.3500
+    "sl":           1.3460
+    "tp1":          1.3540
+    "balance_at_entry": 308.50
+    "opened_at":    "2026-05-25T10:30:00Z"
+    "closed_at":    "2026-05-25T11:15:00Z"   (null while open)
+    "exit_price":   1.3555                    (null while open)
+    "pnl":          14.50                     (null while open)
+    "outcome":      "win" | "loss" | "be"     (null while open)
+    "exit_reason":  "tp1" | "sl" | "trailing" | "manual" | "unknown"
+  }
+"""
+
+import json
+import logging
+import os
+import threading
+from datetime import datetime, timezone
+from typing import Optional
+
+logger = logging.getLogger(__name__)
+
+_LOG_PATH = os.getenv("TRADE_LOG_PATH", "/tmp/trade_log.json")
+
+
+class TradeLog:
+    def __init__(self):
+        self._lock   = threading.Lock()
+        self._trades: list[dict] = []
+        self._load()
+
+    # ------------------------------------------------------------------
+    # Persistence
+    # ------------------------------------------------------------------
+
+    def _load(self):
+        try:
+            if os.path.exists(_LOG_PATH):
+                with open(_LOG_PATH, "r") as f:
+                    self._trades = json.load(f)
+                logger.info(f"[TradeLog] Loaded {len(self._trades)} trades from {_LOG_PATH}")
+        except Exception as e:
+            logger.warning(f"[TradeLog] Could not load trade log: {e}")
+            self._trades = []
+
+    def _save(self):
+        try:
+            with open(_LOG_PATH, "w") as f:
+                json.dump(self._trades, f, indent=2)
+        except Exception as e:
+            logger.warning(f"[TradeLog] Could not save trade log: {e}")
+
+    # ------------------------------------------------------------------
+    # Public API
+    # ------------------------------------------------------------------
+
+    def log_entry(
+        self,
+        ticker:   str,
+        side:     str,
+        lots:     float,
+        entry:    float,
+        sl:       float,
+        tp1:      float,
+        balance:  float,
+        order_id: str = "",
+    ) -> str:
+        """Record a new trade entry.  Returns the trade ID."""
+        now = datetime.now(timezone.utc)
+        trade_id = f"{now.strftime('%Y%m%dT%H%M%S')}_{ticker}"
+
+        record = {
+            "id":               trade_id,
+            "position_id":      None,
+            "order_id":         order_id,
+            "ticker":           ticker.upper(),
+            "side":             side.lower(),
+            "lots":             lots,
+            "entry":            entry,
+            "sl":               sl,
+            "tp1":              tp1 if tp1 and tp1 > 0 else None,
+            "balance_at_entry": round(balance, 2),
+            "opened_at":        now.isoformat(),
+            "closed_at":        None,
+            "exit_price":       None,
+            "pnl":              None,
+            "outcome":          None,
+            "exit_reason":      None,
+        }
+
+        with self._lock:
+            self._trades.append(record)
+            self._save()
+
+        logger.info(f"[TradeLog] Entry logged: {ticker} {side.upper()} {lots} @ {entry}")
+        return trade_id
+
+    def match_position(self, trade_id: str, position_id: str):
+        """Link a trade log entry to its TradeLocker position ID."""
+        with self._lock:
+            for t in self._trades:
+                if t["id"] == trade_id and t["position_id"] is None:
+                    t["position_id"] = position_id
+                    self._save()
+                    return
+
+    def log_exit(
+        self,
+        position_id:  str,
+        exit_price:   float,
+        pnl:          float,
+        exit_reason:  str = "unknown",
+    ):
+        """
+        Record the close of a trade.
+        Matches by position_id — if no match found (manual trade not logged
+        at entry) a new record is created with partial data.
+        """
+        now = datetime.now(timezone.utc)
+        outcome = "be" if abs(pnl) < 0.01 else ("win" if pnl > 0 else "loss")
+
+        with self._lock:
+            # Find most recent open trade with this position_id
+            matched = None
+            for t in reversed(self._trades):
+                if t["position_id"] == position_id and t["closed_at"] is None:
+                    matched = t
+                    break
+
+            if matched:
+                matched["closed_at"]   = now.isoformat()
+                matched["exit_price"]  = round(exit_price, 5)
+                matched["pnl"]         = round(pnl, 2)
+                matched["outcome"]     = outcome
+                matched["exit_reason"] = exit_reason
+            else:
+                # Manual trade — create a partial record for it
+                self._trades.append({
+                    "id":               f"manual_{position_id}",
+                    "position_id":      position_id,
+                    "order_id":         None,
+                    "ticker":           "UNKNOWN",
+                    "side":             "unknown",
+                    "lots":             None,
+                    "entry":            None,
+                    "sl":               None,
+                    "tp1":              None,
+                    "balance_at_entry": None,
+                    "opened_at":        None,
+                    "closed_at":        now.isoformat(),
+                    "exit_price":       round(exit_price, 5),
+                    "pnl":              round(pnl, 2),
+                    "outcome":          outcome,
+                    "exit_reason":      exit_reason,
+                })
+
+            self._save()
+
+        logger.info(
+            f"[TradeLog] Exit logged: position {position_id} | "
+            f"P&L=${pnl:+.2f} | {outcome.upper()} | reason={exit_reason}"
+        )
+
+    def get_open_trades(self) -> list[dict]:
+        """All trades not yet closed."""
+        with self._lock:
+            return [t for t in self._trades if t["closed_at"] is None]
+
+    def get_recent(self, n: int = 50) -> list[dict]:
+        """Most recent n closed trades, newest first."""
+        with self._lock:
+            closed = [t for t in self._trades if t["closed_at"] is not None]
+        return sorted(closed, key=lambda t: t["closed_at"] or "", reverse=True)[:n]
+
+    def summary(self) -> dict:
+        """Aggregate stats across all closed trades."""
+        with self._lock:
+            closed = [t for t in self._trades if t["closed_at"] is not None]
+
+        if not closed:
+            return {
+                "total_trades": 0,
+                "message": "No closed trades yet.",
+            }
+
+        wins      = [t for t in closed if t["outcome"] == "win"]
+        losses    = [t for t in closed if t["outcome"] == "loss"]
+        breakeven = [t for t in closed if t["outcome"] == "be"]
+        total_pnl = sum(t["pnl"] for t in closed if t["pnl"] is not None)
+        win_rate  = len(wins) / len(closed) * 100 if closed else 0
+
+        # Per-ticker breakdown
+        tickers: dict[str, dict] = {}
+        for t in closed:
+            sym = t["ticker"]
+            if sym not in tickers:
+                tickers[sym] = {"trades": 0, "wins": 0, "losses": 0, "pnl": 0.0}
+            tickers[sym]["trades"] += 1
+            if t["outcome"] == "win":
+                tickers[sym]["wins"] += 1
+            elif t["outcome"] == "loss":
+                tickers[sym]["losses"] += 1
+            if t["pnl"] is not None:
+                tickers[sym]["pnl"] += t["pnl"]
+
+        # Best and worst performing pairs
+        by_pnl  = sorted(tickers.items(), key=lambda x: x[1]["pnl"], reverse=True)
+        best    = by_pnl[0]  if by_pnl else None
+        worst   = by_pnl[-1] if by_pnl else None
+
+        return {
+            "total_trades":   len(closed),
+            "wins":           len(wins),
+            "losses":         len(losses),
+            "breakeven":      len(breakeven),
+            "win_rate_pct":   round(win_rate, 1),
+            "total_pnl":      round(total_pnl, 2),
+            "open_trades":    len(self.get_open_trades()),
+            "best_pair":      {"ticker": best[0],  "pnl": round(best[1]["pnl"], 2)}  if best  else None,
+            "worst_pair":     {"ticker": worst[0], "pnl": round(worst[1]["pnl"], 2)} if worst else None,
+            "by_ticker":      {
+                sym: {
+                    "trades":   d["trades"],
+                    "wins":     d["wins"],
+                    "losses":   d["losses"],
+                    "win_rate": round(d["wins"] / d["trades"] * 100, 1) if d["trades"] else 0,
+                    "pnl":      round(d["pnl"], 2),
+                }
+                for sym, d in sorted(tickers.items(), key=lambda x: x[1]["pnl"], reverse=True)
+            },
+        }

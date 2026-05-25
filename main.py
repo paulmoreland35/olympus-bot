@@ -26,6 +26,7 @@ from tradelocker_client import TradeLockerClient
 from risk import calculate_lots, calculate_default_sl
 from parser import parse_olympus_message
 from trailing import TrailingStopManager
+from trade_log import TradeLog
 
 # ------------------------------------------------------------------
 # Setup
@@ -66,6 +67,7 @@ TRAILING_POLL_SEC = int(os.getenv("TRAILING_POLL_SEC", "10"))
 # ------------------------------------------------------------------
 
 trailing_manager = TrailingStopManager()
+trade_log        = TradeLog()
 
 # ------------------------------------------------------------------
 # Daily drawdown tracker
@@ -125,12 +127,13 @@ def _is_halted(current_balance: float) -> tuple[bool, str]:
 def _trailing_loop():
     """
     Daemon thread that wakes up every TRAILING_POLL_SEC seconds,
-    fetches all open positions from TradeLocker, and applies breakeven
-    / trailing SL moves as needed.
-
+    fetches all open positions from TradeLocker, and:
+      - Applies breakeven / trailing SL moves
+      - Detects closed positions and logs the exit to the trade log
     Works on ALL open positions — bot-placed and manual alike.
     """
-    client = None
+    client       = None
+    prev_pos_map: dict[str, dict] = {}   # position_id → last known position data
 
     while True:
         try:
@@ -148,7 +151,42 @@ def _trailing_loop():
                 client.authenticate()
                 logger.info("[Trailing] Loop client authenticated.")
 
-            positions = client.get_open_positions()
+            positions    = client.get_open_positions()
+            current_ids  = {p["id"] for p in positions}
+
+            # ---- Detect closed positions ----
+            for pid, last_pos in prev_pos_map.items():
+                if pid not in current_ids:
+                    # Position has closed since last poll
+                    entry      = last_pos.get("openPrice", 0)
+                    last_pnl   = last_pos.get("unrealisedPnl", 0)
+                    side       = last_pos.get("side", "")
+                    ticker     = last_pos.get("name", "?")
+
+                    # Approximate exit price from last known P&L
+                    from risk import _contract_size
+                    qty      = last_pos.get("qty", 0)
+                    contract = _contract_size(ticker)
+                    if entry and qty and contract:
+                        price_move  = last_pnl / (qty * contract) if (qty * contract) else 0
+                        exit_price  = (entry + price_move) if side == "buy" else (entry - price_move)
+                    else:
+                        exit_price = entry
+
+                    # Determine exit reason
+                    sl = last_pos.get("stopLoss", 0)
+                    tp = last_pos.get("takeProfit", 0)
+                    if sl and abs(exit_price - sl) / sl < 0.001:
+                        reason = "sl"
+                    elif tp and abs(exit_price - tp) / tp < 0.001:
+                        reason = "tp1"
+                    else:
+                        reason = "manual"
+
+                    trade_log.log_exit(pid, exit_price, last_pnl, reason)
+
+            # Update previous position map
+            prev_pos_map = {p["id"]: p for p in positions}
 
             if not positions:
                 logger.debug("[Trailing] No open positions.")
@@ -239,6 +277,23 @@ def risk_status():
         "trading_halted":     halted,
         "status":             "🔴 HALTED — limit hit" if halted else "🟢 Trading allowed",
     }), 200
+
+# ------------------------------------------------------------------
+# Trade log endpoints
+# ------------------------------------------------------------------
+
+@app.route("/trades", methods=["GET"])
+def trades_summary():
+    """Overall performance summary + recent closed trades."""
+    return jsonify({
+        "summary": trade_log.summary(),
+        "recent":  trade_log.get_recent(20),
+    }), 200
+
+@app.route("/trades/open", methods=["GET"])
+def trades_open():
+    """All currently open (not yet exited) trades."""
+    return jsonify(trade_log.get_open_trades()), 200
 
 # ------------------------------------------------------------------
 # Webhook endpoint
@@ -385,7 +440,15 @@ def webhook():
         logger.error(f"Order failed: {e}")
         return jsonify({"error": "Order failed", "detail": str(e)}), 502
 
-    # 10. Success response
+    # 10. Log the entry
+    order_id = str(order.get("d", {}).get("orderId", "") if isinstance(order.get("d"), dict) else "")
+    trade_id = trade_log.log_entry(
+        ticker=ticker, side=action, lots=lots,
+        entry=entry, sl=sl, tp1=tp1,
+        balance=balance, order_id=order_id,
+    )
+
+    # 11. Success response
     tp_dropped = order.pop("_tp_dropped", False)
     response = {
         "status":   "order_placed",
