@@ -52,6 +52,11 @@ WEBHOOK_SECRET = os.getenv("WEBHOOK_SECRET",    "")
 RISK_PCT       = float(os.getenv("RISK_PCT",    "0.02"))
 DEFAULT_SL_PCT = float(os.getenv("DEFAULT_SL_PCT", "0.01"))
 
+# Daily drawdown limit — bot stops taking new trades for the rest of the day
+# once account balance drops this % below the day's opening balance.
+# e.g. 0.07 = halt if down 7% on the day.
+MAX_DAILY_DRAWDOWN_PCT = float(os.getenv("MAX_DAILY_DRAWDOWN_PCT", "0.07"))
+
 # How often the trailing loop polls open positions (seconds).
 # 10s is a good balance — responsive without hammering the API.
 TRAILING_POLL_SEC = int(os.getenv("TRAILING_POLL_SEC", "10"))
@@ -61,6 +66,57 @@ TRAILING_POLL_SEC = int(os.getenv("TRAILING_POLL_SEC", "10"))
 # ------------------------------------------------------------------
 
 trailing_manager = TrailingStopManager()
+
+# ------------------------------------------------------------------
+# Daily drawdown tracker
+# ------------------------------------------------------------------
+
+from datetime import date as _date
+
+_drawdown_lock       = threading.Lock()
+_day_open_balance    = 0.0   # balance recorded at first trade of the day
+_day_open_date       = None  # the calendar date that balance belongs to
+
+
+def _update_day_open(balance: float):
+    """Record today's opening balance on the first call each day."""
+    global _day_open_balance, _day_open_date
+    today = _date.today()
+    with _drawdown_lock:
+        if _day_open_date != today:
+            _day_open_balance = balance
+            _day_open_date    = today
+            logger.info(
+                f"[Drawdown] New trading day {today} — "
+                f"day-open balance: ${balance:,.2f}"
+            )
+
+
+def _is_halted(current_balance: float) -> tuple[bool, str]:
+    """
+    Returns (halted, reason_string).
+    Halted = True when today's loss has hit MAX_DAILY_DRAWDOWN_PCT.
+    """
+    with _drawdown_lock:
+        open_bal = _day_open_balance
+
+    if open_bal <= 0:
+        return False, ""
+
+    loss_pct = (open_bal - current_balance) / open_bal
+    limit    = MAX_DAILY_DRAWDOWN_PCT
+
+    if loss_pct >= limit:
+        reason = (
+            f"Daily drawdown limit reached: account is down "
+            f"{loss_pct*100:.1f}% today "
+            f"(limit {limit*100:.0f}%). "
+            f"Day-open: ${open_bal:,.2f} | Now: ${current_balance:,.2f}. "
+            f"No new trades until tomorrow."
+        )
+        return True, reason
+
+    return False, ""
 
 # ------------------------------------------------------------------
 # Background trailing stop loop
@@ -149,6 +205,40 @@ def health():
 def trailing_status():
     """Shows all positions currently being trailed."""
     return jsonify(trailing_manager.status()), 200
+
+# ------------------------------------------------------------------
+# Daily risk status
+# ------------------------------------------------------------------
+
+@app.route("/risk", methods=["GET"])
+def risk_status():
+    """Shows today's drawdown vs the 7% limit."""
+    try:
+        client = TradeLockerClient(
+            base_url=TL_BASE_URL, email=TL_EMAIL,
+            password=TL_PASSWORD, server=TL_SERVER,
+        )
+        client.authenticate()
+        current_balance = client.get_balance()
+    except Exception:
+        current_balance = 0.0
+
+    with _drawdown_lock:
+        open_bal  = _day_open_balance
+        open_day  = str(_day_open_date)
+
+    loss_pct  = ((open_bal - current_balance) / open_bal * 100) if open_bal > 0 else 0
+    halted, _ = _is_halted(current_balance)
+
+    return jsonify({
+        "trading_day":        open_day,
+        "day_open_balance":   round(open_bal, 2),
+        "current_balance":    round(current_balance, 2),
+        "loss_today_pct":     round(loss_pct, 2),
+        "daily_limit_pct":    round(MAX_DAILY_DRAWDOWN_PCT * 100, 1),
+        "trading_halted":     halted,
+        "status":             "🔴 HALTED — limit hit" if halted else "🟢 Trading allowed",
+    }), 200
 
 # ------------------------------------------------------------------
 # Webhook endpoint
@@ -243,6 +333,13 @@ def webhook():
     # 6. Get live balance
     balance = client.get_balance()
     logger.info(f"Account balance: ${balance:,.2f}")
+
+    # 6a. Daily drawdown gate
+    _update_day_open(balance)
+    halted, halt_reason = _is_halted(balance)
+    if halted:
+        logger.warning(f"[Drawdown] TRADE BLOCKED — {halt_reason}")
+        return jsonify({"status": "blocked", "reason": halt_reason}), 403
 
     # 7. Fallback SL if missing
     if not sl or sl <= 0:
