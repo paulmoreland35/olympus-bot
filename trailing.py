@@ -30,16 +30,32 @@ class TrailingStopManager:
     Thread-safe manager.  One instance lives for the lifetime of the app.
     Call process(positions) on every poll tick — it returns a list of
     (position_id, new_sl) tuples that the caller should apply.
+
+    register_tp() lets the webhook pre-load TP1 for a position so trailing
+    works even when the broker rejected the TP on the order (TP dropped case).
     """
 
     def __init__(self):
         self._lock  = threading.Lock()
-        # position_id → state dict
+        # position_id / order_id → state dict
         self._state: dict[str, dict] = {}
+        # order_id → tp1 (pre-registered before position_id is known)
+        self._pending_tp: dict[str, float] = {}
 
     # ------------------------------------------------------------------
     # Public API
     # ------------------------------------------------------------------
+
+    def register_tp(self, order_id: str, tp1: float):
+        """
+        Pre-register a TP1 value by order_id so trailing can work even when
+        the broker didn't attach the TP to the position (TP dropped case).
+        Called from the webhook right after the order is placed.
+        """
+        if tp1 and tp1 > 0:
+            with self._lock:
+                self._pending_tp[order_id] = tp1
+            logger.info(f"[Trailing] Pre-registered TP1={tp1} for order {order_id}")
 
     def process(self, positions: list[dict]) -> list[tuple[str, float]]:
         """
@@ -142,7 +158,18 @@ class TrailingStopManager:
         take_profit = pos.get("takeProfit", 0)
         ticker      = pos.get("name", pos_id)
 
-        # Skip positions without TP or SL set — can't trail without reference points
+        # If broker has no TP on the position, check our pre-registered store
+        # (covers cases where TP was dropped by the broker at order placement)
+        if not take_profit or take_profit <= 0:
+            order_id = str(pos.get("orderId", "") or pos.get("order_id", ""))
+            with self._lock:
+                # Check if we have a pending TP for any matching order
+                take_profit = self._pending_tp.get(order_id, 0)
+                # Also check state if already initialised
+                if not take_profit and pos_id in self._state:
+                    take_profit = self._state[pos_id].get("tp1", 0)
+
+        # Skip positions without TP — can't trail without a target
         if not take_profit or take_profit <= 0:
             return None
         if not current_sl or current_sl <= 0:
@@ -190,6 +217,7 @@ class TrailingStopManager:
                     "ticker":     ticker,
                     "side":       side,
                     "entry":      entry,
+                    "tp1":        take_profit,
                     "trail_dist": trail_dist,
                     "activated":  activated,
                     "last_sl":    current_sl,

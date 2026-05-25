@@ -63,7 +63,7 @@ MAX_DAILY_DRAWDOWN_PCT = float(os.getenv("MAX_DAILY_DRAWDOWN_PCT", "0.07"))
 TRAILING_POLL_SEC = int(os.getenv("TRAILING_POLL_SEC", "10"))
 
 # ------------------------------------------------------------------
-# Trailing stop manager (singleton shared across threads)
+# Trailing stop manager + trade log (singletons)
 # ------------------------------------------------------------------
 
 trailing_manager = TrailingStopManager()
@@ -440,8 +440,12 @@ def webhook():
         logger.error(f"Order failed: {e}")
         return jsonify({"error": "Order failed", "detail": str(e)}), 502
 
-    # 10. Log the entry
+    # 10. Register TP with trailing manager (covers TP-dropped case too)
     order_id = str(order.get("d", {}).get("orderId", "") if isinstance(order.get("d"), dict) else "")
+    if tp1 and tp1 > 0:
+        trailing_manager.register_tp(order_id, tp1)
+
+    # Log the entry
     trade_id = trade_log.log_entry(
         ticker=ticker, side=action, lots=lots,
         entry=entry, sl=sl, tp1=tp1,
