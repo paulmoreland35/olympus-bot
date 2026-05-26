@@ -397,18 +397,33 @@ def webhook():
         logger.warning(f"[Drawdown] TRADE BLOCKED — {halt_reason}")
         return jsonify({"status": "blocked", "reason": halt_reason}), 403
 
-    # 6b. Max open trades gate
+    # 6b. Max open trades gate + one trade per symbol rule
     try:
         open_positions = client.get_open_positions()
-        open_count     = len(open_positions)
     except Exception as e:
-        logger.warning(f"Could not fetch open positions for trade limit check: {e}")
-        open_count = 0
+        logger.warning(f"Could not fetch open positions for risk checks: {e}")
+        open_positions = []
 
+    open_count = len(open_positions)
     if open_count >= MAX_OPEN_TRADES:
         msg = (
             f"Max open trades reached: {open_count}/{MAX_OPEN_TRADES} positions "
             f"already open — signal for {ticker} blocked."
+        )
+        logger.warning(f"[Risk] {msg}")
+        return jsonify({"status": "blocked", "reason": msg}), 403
+
+    # One trade per symbol — no stacking the same pair
+    open_tickers = []
+    for p in open_positions:
+        name = str(p.get("name") or p.get("symbol") or "").upper()
+        if name:
+            open_tickers.append(name)
+
+    if ticker.upper() in open_tickers:
+        msg = (
+            f"{ticker} already has an open position — "
+            f"waiting for it to close before taking another signal."
         )
         logger.warning(f"[Risk] {msg}")
         return jsonify({"status": "blocked", "reason": msg}), 403
@@ -418,26 +433,34 @@ def webhook():
         sl = calculate_default_sl(entry, action, DEFAULT_SL_PCT)
         logger.info(f"Using default SL: {sl}")
 
-    # 8. Calculate lot size
-    #    Check for a fixed per-symbol override first (set via env var LOT_OVERRIDE_SYMBOL)
-    #    e.g. LOT_OVERRIDE_NDXUSD=0.20, LOT_OVERRIDE_DJIUSD=0.20
-    #    If no override, calculate dynamically from 2% risk and SL distance
-    lot_override_env = os.getenv(f"LOT_OVERRIDE_{ticker.upper()}")
-    if lot_override_env:
-        lots = float(lot_override_env)
-        logger.info(f"Using fixed lot override for {ticker}: {lots}")
-    else:
-        try:
-            lots = calculate_lots(
-                balance=balance,
-                entry_price=entry,
-                stop_loss_price=sl,
-                risk_pct=RISK_PCT,
-                ticker=ticker,
+    # 7b. Minimum R:R filter — TP must be at least 1.5x the SL distance
+    #     Skips weak setups where the reward doesn't justify the risk.
+    if tp1 and tp1 > 0 and sl and sl > 0:
+        sl_dist = abs(entry - sl)
+        tp_dist = abs(tp1 - entry)
+        rr      = tp_dist / sl_dist if sl_dist > 0 else 0
+        if rr < 1.5:
+            msg = (
+                f"R:R too low for {ticker}: {rr:.2f} "
+                f"(TP={tp1}, SL={sl}, entry={entry}). "
+                f"Minimum required: 1.5 — signal skipped."
             )
-        except Exception as e:
-            logger.error(f"Position sizing error: {e}")
-            return jsonify({"error": "Position sizing failed", "detail": str(e)}), 400
+            logger.warning(f"[Risk] {msg}")
+            return jsonify({"status": "blocked", "reason": msg}), 403
+        logger.info(f"[Risk] R:R check passed: {rr:.2f} ✓")
+
+    # 8. Calculate lot size — always dynamic 2% risk based on SL distance
+    try:
+        lots = calculate_lots(
+            balance=balance,
+            entry_price=entry,
+            stop_loss_price=sl,
+            risk_pct=RISK_PCT,
+            ticker=ticker,
+        )
+    except Exception as e:
+        logger.error(f"Position sizing error: {e}")
+        return jsonify({"error": "Position sizing failed", "detail": str(e)}), 400
 
     logger.info(
         f"Trade: {action.upper()} {ticker} | "
