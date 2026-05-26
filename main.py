@@ -57,6 +57,7 @@ DEFAULT_SL_PCT = float(os.getenv("DEFAULT_SL_PCT", "0.01"))
 # once account balance drops this % below the day's opening balance.
 # e.g. 0.07 = halt if down 7% on the day.
 MAX_DAILY_DRAWDOWN_PCT = float(os.getenv("MAX_DAILY_DRAWDOWN_PCT", "0.07"))
+MAX_OPEN_TRADES        = int(os.getenv("MAX_OPEN_TRADES", "3"))
 
 # How often the trailing loop polls open positions (seconds).
 # 10s is a good balance — responsive without hammering the API.
@@ -395,6 +396,22 @@ def webhook():
     if halted:
         logger.warning(f"[Drawdown] TRADE BLOCKED — {halt_reason}")
         return jsonify({"status": "blocked", "reason": halt_reason}), 403
+
+    # 6b. Max open trades gate
+    try:
+        open_positions = client.get_open_positions()
+        open_count     = len(open_positions)
+    except Exception as e:
+        logger.warning(f"Could not fetch open positions for trade limit check: {e}")
+        open_count = 0
+
+    if open_count >= MAX_OPEN_TRADES:
+        msg = (
+            f"Max open trades reached: {open_count}/{MAX_OPEN_TRADES} positions "
+            f"already open — signal for {ticker} blocked."
+        )
+        logger.warning(f"[Risk] {msg}")
+        return jsonify({"status": "blocked", "reason": msg}), 403
 
     # 7. Fallback SL if missing
     if not sl or sl <= 0:
