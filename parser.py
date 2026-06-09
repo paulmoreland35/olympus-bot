@@ -12,19 +12,27 @@ import logging
 
 logger = logging.getLogger(__name__)
 
-# Maps TradingView symbol names → TradeLocker/LIVVFX symbol names
+# Maps TradingView symbol names → TradeLocker/HEROFX symbol names
 SYMBOL_MAP = {
-    "NAS100":   "NDXUSD",
-    "US100":    "NDXUSD",
-    "NASDAQ":   "NDXUSD",
-    "US30":     "DJIUSD",
-    "DJ30":     "DJIUSD",
-    "WS30":     "DJIUSD",
-    "DOW":      "DJIUSD",
-    # Gold/Silver already match
+    # NAS100 variants → HEROFX: NAS100
+    "NAS100":   "NAS100",
+    "US100":    "NAS100",
+    "NASDAQ":   "NAS100",
+    "NDX100":   "NAS100",
+    "NDXUSD":   "NAS100",
+    # US30 / Dow variants → HEROFX: US30
+    "DJ30":     "US30",
+    "WS30":     "US30",
+    "DOW":      "US30",
+    "DJIUSD":   "US30",
+    # SPX500 variants → HEROFX: SPX500
+    "SPX":      "SPX500",
+    "SP500":    "SPX500",
+    "US500":    "SPX500",
+    # Gold/Silver
     "XAUUSD":   "XAUUSD",
     "XAGUSD":   "XAGUSD",
-    # Forex already matches
+    # Forex pairs pass through unchanged
 }
 
 
