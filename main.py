@@ -433,17 +433,17 @@ def webhook():
         sl = calculate_default_sl(entry, action, DEFAULT_SL_PCT)
         logger.info(f"Using default SL: {sl}")
 
-    # 7b. Minimum R:R filter — TP must be at least 1.5x the SL distance
-    #     Skips weak setups where the reward doesn't justify the risk.
+    # 7b. Minimum R:R filter — TP must be at least 1.0x the SL distance
+    #     Olympus signals are 1:1 by design, so we allow anything >= 1.0.
     if tp1 and tp1 > 0 and sl and sl > 0:
         sl_dist = abs(entry - sl)
         tp_dist = abs(tp1 - entry)
         rr      = tp_dist / sl_dist if sl_dist > 0 else 0
-        if rr < 1.5:
+        if rr < 1.0:
             msg = (
                 f"R:R too low for {ticker}: {rr:.2f} "
                 f"(TP={tp1}, SL={sl}, entry={entry}). "
-                f"Minimum required: 1.5 — signal skipped."
+                f"Minimum required: 1.0 — signal skipped."
             )
             logger.warning(f"[Risk] {msg}")
             return jsonify({"status": "blocked", "reason": msg}), 403

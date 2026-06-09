@@ -59,16 +59,37 @@ def parse_olympus_message(message: str) -> dict:
     action = action_match.group(1).lower()
 
     # ---- Symbol -----------------------------------------------------------
-    # Olympus places the symbol right after BUY/SELL
-    # e.g. "BUY GBPUSD |" or "BUY THINKMARKETS:GBPUSD |"
-    symbol_match = re.search(
-        r'\b(?:BUY|SELL)\s+(?:[A-Z0-9]+:)?([A-Z0-9]+)',
-        msg,
-        re.IGNORECASE,
+    # Filler words that follow BUY/SELL but are NOT the symbol
+    _FILLER = {"ON", "AT", "FOR", "SIGNAL", "ALERT", "TRADE", "ENTRY",
+               "THE", "A", "IN", "NOW", "SETUP", "BUY", "SELL"}
+
+    # Try word immediately after BUY/SELL (skipping fillers)
+    ticker = ""
+    after_action = re.findall(
+        r'\b(?:BUY|SELL)\s+((?:[A-Z0-9]+:)?[A-Z0-9]+)',
+        msg, re.IGNORECASE
     )
-    if not symbol_match:
+    for candidate in after_action:
+        candidate = candidate.upper()
+        if ":" in candidate:
+            candidate = candidate.split(":", 1)[-1]
+        if candidate not in _FILLER and len(candidate) >= 2:
+            ticker = candidate
+            break
+
+    # Fallback: scan all pipe-separated segments for a symbol-shaped word
+    if not ticker:
+        for segment in msg.split("|"):
+            words = re.findall(r'\b([A-Z]{2,6}[A-Z0-9]{0,4})\b', segment.upper())
+            for word in words:
+                if word not in _FILLER and not word.isdigit():
+                    ticker = word
+                    break
+            if ticker:
+                break
+
+    if not ticker:
         raise ValueError(f"Could not find symbol in message: {msg}")
-    ticker = symbol_match.group(1).upper()
 
     # Remap TradingView symbol → TradeLocker symbol if needed
     if ticker in SYMBOL_MAP:
@@ -89,11 +110,9 @@ def parse_olympus_message(message: str) -> dict:
         raise ValueError(f"Could not find SL in message: {msg}")
     sl = float(sl_match.group(1))
 
-    # ---- Take Profits (TP1 required, TP2/TP3 optional) -------------------
+    # ---- Take Profits (all optional — trade executes with SL only if absent)
     tp1_match = re.search(r'TP1[:\s]+([\d.]+)', msg, re.IGNORECASE)
-    if not tp1_match:
-        raise ValueError(f"Could not find TP1 in message: {msg}")
-    tp1 = float(tp1_match.group(1))
+    tp1 = float(tp1_match.group(1)) if tp1_match else 0.0
 
     tp2_match = re.search(r'TP2[:\s]+([\d.]+)', msg, re.IGNORECASE)
     tp2 = float(tp2_match.group(1)) if tp2_match else None
