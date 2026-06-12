@@ -1,4 +1,4 @@
-"""
+﻿"""
 Olympus → TradeLocker Webhook Server
 -------------------------------------
 Receives TradingView alerts and places trades on TradeLocker with
@@ -27,6 +27,7 @@ from risk import calculate_lots, calculate_default_sl
 from parser import parse_olympus_message
 from trailing import TrailingStopManager
 from trade_log import TradeLog
+from scanner import start_scanner_thread
 
 # ------------------------------------------------------------------
 # Setup
@@ -522,4 +523,7 @@ def webhook():
 if __name__ == "__main__":
     port = int(os.getenv("PORT", 5000))
     logger.info(f"Starting Olympus bot on port {port}...")
+    # Start autonomous scanner if API key is configured
+    if os.getenv("TWELVE_DATA_API_KEY"):
+        start_scanner_thread(client)
     app.run(host="0.0.0.0", port=port)
