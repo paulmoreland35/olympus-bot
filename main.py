@@ -71,6 +71,10 @@ TRAILING_POLL_SEC = int(os.getenv("TRAILING_POLL_SEC", "10"))
 trailing_manager = TrailingStopManager()
 trade_log        = TradeLog()
 
+# Start autonomous scanner at module load (runs under gunicorn, not just __main__)
+if os.getenv("TWELVE_DATA_API_KEY"):
+    start_scanner_thread()
+
 # ------------------------------------------------------------------
 # Daily drawdown tracker
 # ------------------------------------------------------------------
@@ -523,7 +527,4 @@ def webhook():
 if __name__ == "__main__":
     port = int(os.getenv("PORT", 5000))
     logger.info(f"Starting Olympus bot on port {port}...")
-    # Start autonomous scanner if API key is configured
-    if os.getenv("TWELVE_DATA_API_KEY"):
-        start_scanner_thread(client)
     app.run(host="0.0.0.0", port=port)
