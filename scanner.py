@@ -285,11 +285,26 @@ def _seconds_until_next_4h_close() -> float:
 # Main scanner loop
 # ---------------------------------------------------------------------------
 
-def run_scanner(client):
+def run_scanner(client=None):
     """
     Background thread: wakes at every 4H candle close, scans all symbols,
     places trades when confluence score >= MIN_SCORE.
     """
+    from tradelocker_client import TradeLockerClient
+    if client is None:
+        try:
+            client = TradeLockerClient(
+                base_url=os.getenv("TL_BASE_URL", "https://live.tradelocker.com/backend-api"),
+                email=os.getenv("TL_EMAIL", ""),
+                password=os.getenv("TL_PASSWORD", ""),
+                server=os.getenv("TL_SERVER", "LIVVFX"),
+            )
+            client.authenticate()
+            logger.info("[Scanner] TradeLocker client authenticated.")
+        except Exception as e:
+            logger.error(f"[Scanner] TradeLocker auth failed: {e}")
+            return
+
     api_key = os.getenv("TWELVE_DATA_API_KEY", "")
     if not api_key:
         logger.error("[Scanner] TWELVE_DATA_API_KEY not set — scanner disabled.")
@@ -374,7 +389,7 @@ def run_scanner(client):
         logger.info("[Scanner] Scan cycle complete.")
 
 
-def start_scanner_thread(client):
+def start_scanner_thread(client=None):
     """Launch the scanner as a daemon background thread."""
     t = threading.Thread(target=run_scanner, args=(client,), daemon=True, name="scanner")
     t.start()
