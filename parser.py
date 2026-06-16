@@ -7,33 +7,59 @@ Parses the native Olympus indicator alert format:
 Returns a clean dict with action, ticker, entry, sl, tp1, tp2, tp3.
 """
 
+import os
 import re
 import logging
 
 logger = logging.getLogger(__name__)
 
-# Maps TradingView symbol names → TradeLocker/HEROFX symbol names
-SYMBOL_MAP = {
-    # NAS100 variants → HEROFX: NAS100
-    "NAS100":   "NAS100",
-    "US100":    "NAS100",
-    "NASDAQ":   "NAS100",
-    "NDX100":   "NAS100",
-    "NDXUSD":   "NAS100",
-    # US30 / Dow variants → HEROFX: US30
-    "DJ30":     "US30",
-    "WS30":     "US30",
-    "DOW":      "US30",
-    "DJIUSD":   "US30",
-    # SPX500 variants → HEROFX: SPX500
-    "SPX":      "SPX500",
-    "SP500":    "SPX500",
-    "US500":    "SPX500",
-    # Gold/Silver
-    "XAUUSD":   "XAUUSD",
-    "XAGUSD":   "XAGUSD",
-    # Forex pairs pass through unchanged
+# Per-broker symbol maps — TradingView name → broker instrument name.
+# Controlled by the TL_SERVER env var set in Railway.
+_SYMBOL_MAPS = {
+    "HEROFX": {
+        "NAS100":  "NAS100",
+        "US100":   "NAS100",
+        "NASDAQ":  "NAS100",
+        "NDX100":  "NAS100",
+        "NDXUSD":  "NAS100",
+        "DJ30":    "US30",
+        "WS30":    "US30",
+        "DOW":     "US30",
+        "DJIUSD":  "US30",
+        "SPX":     "SPX500",
+        "SP500":   "SPX500",
+        "US500":   "SPX500",
+    },
+    "LIVVFX": {
+        "NAS100":  "NDXUSD",
+        "US100":   "NDXUSD",
+        "NASDAQ":  "NDXUSD",
+        "NDX100":  "NDXUSD",
+        "DJ30":    "DJIUSD",
+        "WS30":    "DJIUSD",
+        "DOW":     "DJIUSD",
+        "US30":    "DJIUSD",
+        "SPX":     "SPXUSD",
+        "SP500":   "SPXUSD",
+        "US500":   "SPXUSD",
+        "SPX500":  "SPXUSD",
+    },
 }
+
+# Gold/Silver pass through unchanged on all brokers
+_METALS = {"XAUUSD", "XAGUSD"}
+
+def _get_symbol_map() -> dict:
+    server = os.getenv("TL_SERVER", "HEROFX").upper()
+    return _SYMBOL_MAPS.get(server, _SYMBOL_MAPS["HEROFX"])
+
+def remap_symbol(ticker: str) -> str:
+    """Map a TradingView ticker to the correct broker instrument name."""
+    upper = ticker.upper()
+    if upper in _METALS:
+        return upper
+    symbol_map = _get_symbol_map()
+    return symbol_map.get(upper, upper)
 
 
 def parse_olympus_message(message: str) -> dict:
@@ -99,12 +125,11 @@ def parse_olympus_message(message: str) -> dict:
     if not ticker:
         raise ValueError(f"Could not find symbol in message: {msg}")
 
-    # Remap TradingView symbol → TradeLocker symbol if needed
-    if ticker in SYMBOL_MAP:
-        mapped = SYMBOL_MAP[ticker]
-        if mapped != ticker:
-            logger.info(f"Symbol remapped: {ticker} → {mapped}")
-        ticker = mapped
+    # Remap TradingView symbol → broker-specific instrument name
+    remapped = remap_symbol(ticker)
+    if remapped != ticker:
+        logger.info(f"Symbol remapped: {ticker} → {remapped} (broker: {os.getenv('TL_SERVER','?')})")
+    ticker = remapped
 
     # ---- Entry price ------------------------------------------------------
     entry_match = re.search(r'ENTRY[:\s]+([\d.]+)', msg, re.IGNORECASE)

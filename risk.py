@@ -29,16 +29,19 @@ CONTRACT_SIZES = {
     "XAUUSD":  100,      # 100 troy oz per lot
     "XAGUSD":  5_000,    # 5,000 oz per lot
     # Indices (CFD — $10 per point per lot)
-    "NDXUSD":  10,   # NAS100 on LIVVFX
-    "DJIUSD":  10,   # US30 on LIVVFX
+    # HEROFX names
     "NAS100":  10,
-    "US100":   10,
-    "NDX":     10,
     "US30":    10,
+    "SPX500":  10,
+    # LIVVFX names
+    "NDXUSD":  10,
+    "DJIUSD":  10,
+    "SPXUSD":  10,
+    # Common aliases
+    "US100":   10,
+    "US500":   10,
     "DJ30":    10,
     "WS30":    10,
-    "SPX500":  10,
-    "US500":   10,
 }
 
 
