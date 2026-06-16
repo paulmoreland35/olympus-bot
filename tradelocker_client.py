@@ -330,9 +330,37 @@ class TradeLockerClient:
             result = resp2.json()
             result["_tp_dropped"] = True  # flag so caller knows TP wasn't set
 
+        # Broker forbids SL in the order — place without SL, attach it after
+        sl_to_attach = None
+        if result.get("s") == "error" and "SL" in result.get("errmsg", "").upper():
+            sl_to_attach = stop_loss
+            logger.warning(
+                f"SL rejected by broker ({result.get('errmsg')}) — "
+                f"retrying without SL, will attach via modify after fill."
+            )
+            payload_no_sl = {k: v for k, v in payload.items()
+                             if k not in ("stopLoss", "stopLossType")}
+            resp3 = self.session.post(url, json=payload_no_sl, timeout=10)
+            resp3.raise_for_status()
+            result = resp3.json()
+            result["_sl_pending"] = sl_to_attach  # caller must attach SL
+
         # Raise a proper exception if the broker still returns an error
         if result.get("s") == "error":
             raise RuntimeError(f"Broker error: {result.get('errmsg', result)}")
+
+        # Attach SL via position modify if it was rejected in the order
+        if sl_to_attach and result.get("s") != "error":
+            try:
+                import time; time.sleep(1)
+                positions = self.get_open_positions()
+                for pos in positions:
+                    if str(pos.get("tradableInstrumentId")) == str(tradable_id):
+                        self.modify_position_sl(str(pos["id"]), sl_to_attach)
+                        logger.info(f"SL attached post-fill: {sl_to_attach}")
+                        break
+            except Exception as e:
+                logger.warning(f"Could not attach SL after fill: {e}")
 
         logger.info(f"Order placed: {result}")
         return result
