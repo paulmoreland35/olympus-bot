@@ -10,6 +10,7 @@ Key discoveries from live API inspection:
   - TRADE route is the one with type == "TRADE"
 """
 
+import os
 import requests
 import logging
 from typing import Optional
@@ -83,7 +84,13 @@ class TradeLockerClient:
         if not accounts:
             raise ValueError("No accounts found on this TradeLocker profile.")
 
-        account = accounts[0]
+        target_num = os.getenv("TL_ACCOUNT_NUM", "").strip()
+        if target_num:
+            account = next((a for a in accounts if str(a.get("accNum")) == target_num), None)
+            if account is None:
+                raise ValueError(f"TL_ACCOUNT_NUM={target_num} not found in accounts: {[a.get('accNum') for a in accounts]}")
+        else:
+            account = accounts[0]
 
         # "id" is used in URL paths; "accNum" goes in the request header
         self.account_id = str(account.get("id", ""))
@@ -114,7 +121,8 @@ class TradeLockerClient:
             data = resp.json()
             accounts = data if isinstance(data, list) else data.get("accounts", [])
             if accounts:
-                account = accounts[0]
+                target_num = os.getenv("TL_ACCOUNT_NUM", "").strip()
+                account = next((a for a in accounts if str(a.get("accNum")) == target_num), accounts[0]) if target_num else accounts[0]
                 self.balance = float(
                     account.get("accountBalance")
                     or account.get("balance")
