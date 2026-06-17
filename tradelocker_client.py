@@ -84,11 +84,15 @@ class TradeLockerClient:
         if not accounts:
             raise ValueError("No accounts found on this TradeLocker profile.")
 
-        target_num = os.getenv("TL_ACCOUNT_NUM", "").strip()
-        if target_num:
-            account = next((a for a in accounts if str(a.get("accNum")) == target_num), None)
-            if account is None:
-                raise ValueError(f"TL_ACCOUNT_NUM={target_num} not found in accounts: {[a.get('accNum') for a in accounts]}")
+        target_acc_num = os.getenv("TL_ACC_NUM", "").strip()
+        if target_acc_num:
+            matched = [a for a in accounts if str(a.get("accNum", "")) == str(target_acc_num)]
+            if matched:
+                account = matched[0]
+                logger.info(f"Using targeted account accNum={target_acc_num}")
+            else:
+                available = [str(a.get("accNum", "?")) for a in accounts]
+                raise ValueError(f"Account {target_acc_num} not found. Available: {available}")
         else:
             account = accounts[0]
 
