@@ -80,6 +80,7 @@ class TradeLockerClient:
         resp.raise_for_status()
         data = resp.json()
 
+        logger.info(f"Raw all-accounts response: {data}")
         accounts = data if isinstance(data, list) else data.get("accounts", [])
         if not accounts:
             raise ValueError("No accounts found on this TradeLocker profile.")
