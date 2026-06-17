@@ -138,7 +138,7 @@ class TradeLockerClient:
             data = resp.json()
             accounts = data if isinstance(data, list) else data.get("accounts", [])
             if accounts:
-                target_num = os.getenv("TL_ACCOUNT_NUM", "").strip()
+                target_num = os.getenv("TL_ACC_NUM", "").strip()
                 account = next((a for a in accounts if str(a.get("accNum")) == target_num), accounts[0]) if target_num else accounts[0]
                 self.balance = float(
                     account.get("accountBalance")
