@@ -86,13 +86,26 @@ class TradeLockerClient:
 
         target_acc_num = os.getenv("TL_ACC_NUM", "").strip()
         if target_acc_num:
-            matched = [a for a in accounts if str(a.get("accNum", "")) == str(target_acc_num)]
+            # Match against any field that might hold the broker account number
+            def _matches(a):
+                t = str(target_acc_num)
+                return (
+                    str(a.get("accNum", "")) == t
+                    or str(a.get("accountNumber", "")) == t
+                    or str(a.get("number", "")) == t
+                    or str(a.get("login", "")) == t
+                    or str(a.get("id", "")) == t
+                )
+            matched = [a for a in accounts if _matches(a)]
             if matched:
                 account = matched[0]
-                logger.info(f"Using targeted account accNum={target_acc_num}")
+                logger.info(f"Using targeted account TL_ACC_NUM={target_acc_num} -> accNum={account.get('accNum')}")
             else:
+                # Log all account fields so we can diagnose the mismatch
+                for i, a in enumerate(accounts):
+                    logger.error(f"Account[{i}] fields: {a}")
                 available = [str(a.get("accNum", "?")) for a in accounts]
-                raise ValueError(f"Account {target_acc_num} not found. Available: {available}")
+                raise ValueError(f"Account {target_acc_num} not found. Available accNums: {available}")
         else:
             account = accounts[0]
 
