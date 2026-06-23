@@ -256,6 +256,60 @@ class TradeLockerClient:
         logger.debug(f"Fetched {len(normalised)} open positions.")
         return normalised
 
+    def get_closed_trades(self) -> list[dict]:
+        """
+        Fetch closed-position history from TradeLocker (broker-side truth —
+        survives bot redeploys). Returns a list of normalised dicts:
+          {name, side, qty, openPrice, closePrice, pnl, closedAt}
+
+        TradeLocker returns history in the same columnar format as positions:
+          {"d": {"columns": [...], "data": [[...], ...]}}
+        Endpoint name varies by version, so we try the known variants and
+        return [] gracefully on any failure (report must never crash on this).
+        """
+        endpoints = [
+            f"{self.base_url}/trade/accounts/{self.account_id}/positionsHistory",
+            f"{self.base_url}/trade/accounts/{self.account_id}/ordersHistory",
+        ]
+        for url in endpoints:
+            try:
+                resp = self.session.get(url, timeout=15)
+                if resp.status_code == 401:
+                    self.refresh_access_token()
+                    resp = self.session.get(url, timeout=15)
+                if resp.status_code != 200:
+                    continue
+                data = resp.json()
+                d = data.get("d", data)
+                columns = d.get("columns", [])
+                rows    = d.get("data",    [])
+                if columns and rows:
+                    records = [dict(zip(columns, row)) for row in rows]
+                elif isinstance(d, list):
+                    records = d
+                else:
+                    continue
+
+                normalised = []
+                for r in records:
+                    rec = dict(r)
+                    rec["name"]       = rec.get("name") or rec.get("symbol") or "?"
+                    rec["side"]       = str(rec.get("side", "")).lower()
+                    rec["qty"]        = float(rec.get("qty") or rec.get("lots") or 0)
+                    rec["openPrice"]  = float(rec.get("openPrice") or rec.get("avgPrice") or 0)
+                    rec["closePrice"] = float(rec.get("closePrice") or rec.get("exitPrice") or 0)
+                    rec["pnl"]        = float(rec.get("pnl") or rec.get("realisedPnl") or
+                                              rec.get("realizedPnl") or 0)
+                    rec["closedAt"]   = rec.get("closeTime") or rec.get("closedAt") or ""
+                    normalised.append(rec)
+                logger.info(f"Fetched {len(normalised)} closed trades from {url.split('/')[-1]}")
+                return normalised
+            except Exception as e:
+                logger.warning(f"Closed-trades fetch failed at {url.split('/')[-1]}: {e}")
+                continue
+        logger.warning("Could not fetch closed-trade history from any endpoint.")
+        return []
+
     def modify_position_sl(self, position_id: str, new_sl: float) -> dict:
         """
         Move the stop loss on an open position to new_sl.

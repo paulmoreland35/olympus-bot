@@ -302,6 +302,99 @@ def trades_open():
     return jsonify(trade_log.get_open_trades()), 200
 
 # ------------------------------------------------------------------
+# Daily report endpoint — machine-readable snapshot for the report agent
+# ------------------------------------------------------------------
+
+@app.route("/report", methods=["GET"])
+def report():
+    """
+    Returns a JSON snapshot of account performance for the daily report:
+      account balance/equity, day-open balance + drawdown, open positions,
+      closed-trade history (TP/SL outcomes), and scanner health.
+    Pulls live data straight from TradeLocker so it survives redeploys.
+    """
+    out = {"account": os.getenv("TL_ACC_NUM", "default"), "server": TL_SERVER}
+
+    # --- Broker data ---
+    try:
+        client = TradeLockerClient(
+            base_url=TL_BASE_URL, email=TL_EMAIL,
+            password=TL_PASSWORD, server=TL_SERVER,
+        )
+        client.authenticate()
+        balance = client.get_balance()
+        out["balance"]    = round(balance, 2)
+        out["account_id"] = client.account_id
+
+        try:
+            open_positions = client.get_open_positions()
+        except Exception as e:
+            open_positions = []
+            out["open_positions_error"] = str(e)
+        out["open_positions"] = [
+            {
+                "ticker": p.get("name"), "side": p.get("side"),
+                "qty": p.get("qty"), "entry": p.get("openPrice"),
+                "sl": p.get("stopLoss"), "tp": p.get("takeProfit"),
+                "unrealised_pnl": p.get("unrealisedPnl"),
+            }
+            for p in open_positions
+        ]
+
+        closed = client.get_closed_trades()
+        wins   = [c for c in closed if c.get("pnl", 0) > 0]
+        losses = [c for c in closed if c.get("pnl", 0) < 0]
+        out["closed_trades"] = [
+            {
+                "ticker": c.get("name"), "side": c.get("side"),
+                "qty": c.get("qty"), "entry": c.get("openPrice"),
+                "exit": c.get("closePrice"), "pnl": round(c.get("pnl", 0), 2),
+                "outcome": "WIN" if c.get("pnl", 0) > 0 else "LOSS" if c.get("pnl", 0) < 0 else "BE",
+                "closed_at": c.get("closedAt"),
+            }
+            for c in closed
+        ]
+        total_pnl = sum(c.get("pnl", 0) for c in closed)
+        out["stats"] = {
+            "total_closed": len(closed),
+            "wins": len(wins),
+            "losses": len(losses),
+            "win_rate_pct": round(100 * len(wins) / len(closed), 1) if closed else 0,
+            "net_pnl": round(total_pnl, 2),
+        }
+
+        # Drawdown state
+        with _drawdown_lock:
+            day_open = _day_open_balance
+        out["day_open_balance"] = round(day_open, 2)
+        if day_open > 0:
+            out["day_pnl"]      = round(balance - day_open, 2)
+            out["day_pnl_pct"]  = round(100 * (balance - day_open) / day_open, 2)
+        halted, halt_reason = _is_halted(balance)
+        out["drawdown_halted"] = halted
+        out["drawdown_reason"] = halt_reason or None
+
+    except Exception as e:
+        out["broker_error"] = str(e)
+        logger.error(f"[Report] Broker fetch failed: {e}")
+
+    # --- Scanner health ---
+    try:
+        from scanner import SCANNER_STATUS
+        out["scanner"] = dict(SCANNER_STATUS)
+        out["scanner"]["api_key_set"] = bool(os.getenv("TWELVE_DATA_API_KEY"))
+    except Exception as e:
+        out["scanner"] = {"error": str(e)}
+
+    # --- Local trade log (entries the bot itself placed this deploy) ---
+    try:
+        out["bot_logged_trades"] = trade_log.get_open_trades()
+    except Exception:
+        pass
+
+    return jsonify(out), 200
+
+# ------------------------------------------------------------------
 # Webhook endpoint
 # ------------------------------------------------------------------
 

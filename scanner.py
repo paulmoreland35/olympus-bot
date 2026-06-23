@@ -285,6 +285,17 @@ def _seconds_until_next_4h_close() -> float:
 # Main scanner loop
 # ---------------------------------------------------------------------------
 
+# Live scanner status — read by the /report endpoint to confirm the
+# scanner thread is actually alive and scanning.
+SCANNER_STATUS = {
+    "running":         False,
+    "symbols":         [],
+    "last_scan_utc":   None,   # ISO timestamp of last completed scan cycle
+    "last_signal":     None,   # description of most recent signal fired
+    "signals_total":   0,
+}
+
+
 def run_scanner(client=None):
     """
     Background thread: wakes at every 4H candle close, scans all symbols,
@@ -327,6 +338,8 @@ def run_scanner(client=None):
     td = TDClient(apikey=api_key)
     last_signals: dict[str, object] = {}  # broker_symbol -> last bar index that fired
 
+    SCANNER_STATUS["running"] = True
+    SCANNER_STATUS["symbols"] = list(symbols.values())
     logger.info(f"[Scanner] Started. Symbols: {symbols}")
 
     while True:
@@ -381,11 +394,14 @@ def run_scanner(client=None):
                 )
 
                 last_signals[broker_symbol] = last_bar
+                SCANNER_STATUS["last_signal"]   = f"{action.upper()} {broker_symbol} @ {entry} (score {score}/8)"
+                SCANNER_STATUS["signals_total"] += 1
                 logger.info(f"[Scanner] Order placed for {broker_symbol}: {order}")
 
             except Exception as e:
                 logger.error(f"[Scanner] Error on {broker_symbol}: {e}", exc_info=True)
 
+        SCANNER_STATUS["last_scan_utc"] = datetime.now(timezone.utc).isoformat()
         logger.info("[Scanner] Scan cycle complete.")
 
 
