@@ -75,6 +75,11 @@ trade_log        = TradeLog()
 if os.getenv("TWELVE_DATA_API_KEY"):
     start_scanner_thread()
 
+# Start the daily report emailer (only on the bot that has RESEND_API_KEY set)
+from daily_report import start_report_thread, send_report_now
+if os.getenv("RESEND_API_KEY"):
+    start_report_thread()
+
 # ------------------------------------------------------------------
 # Daily drawdown tracker
 # ------------------------------------------------------------------
@@ -393,6 +398,15 @@ def report():
         pass
 
     return jsonify(out), 200
+
+@app.route("/send-report", methods=["POST", "GET"])
+def send_report():
+    """Manually trigger the daily report email (for testing)."""
+    secret = request.args.get("secret") or (request.get_json(silent=True) or {}).get("secret")
+    if WEBHOOK_SECRET and secret != WEBHOOK_SECRET:
+        return jsonify({"error": "Unauthorized"}), 401
+    ok = send_report_now()
+    return jsonify({"sent": ok}), (200 if ok else 502)
 
 # ------------------------------------------------------------------
 # Webhook endpoint

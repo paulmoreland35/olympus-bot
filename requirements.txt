@@ -5,3 +5,4 @@ gunicorn==22.0.0
 pandas==2.2.2
 numpy==1.26.4
 twelvedata==1.2.11
+tzdata==2024.1
