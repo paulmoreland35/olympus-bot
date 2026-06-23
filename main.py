@@ -316,6 +316,10 @@ def webhook():
     raw_body = request.get_data(as_text=True).strip()
     data = request.get_json(silent=True)
 
+    # Dry-run flag: runs the WHOLE pipeline (auth, balance, risk, sizing) but
+    # NEVER places a real order. Lets us safely test against a live account.
+    dry_run = bool(data.get("dry_run")) if data else False
+
     if data:
         # JSON received
         logger.info(f"Webhook received (JSON): {data}")
@@ -471,6 +475,24 @@ def webhook():
         f"Trade: {action.upper()} {ticker} | "
         f"Lots: {lots} | Entry: {entry} | SL: {sl} | TP1: {tp1}"
     )
+
+    # 8b. DRY RUN — stop here. Everything above (auth, balance, drawdown gate,
+    #     risk checks, lot sizing) has run for real, but NO order is sent.
+    if dry_run:
+        logger.info(f"[DRY RUN] Would place {action.upper()} {ticker} | lots={lots} "
+                    f"| entry={entry} | SL={sl} | TP1={tp1} — NO order sent.")
+        return jsonify({
+            "status":   "dry_run_ok",
+            "note":     "Pipeline validated end-to-end. NO real order was placed.",
+            "ticker":   ticker,
+            "action":   action,
+            "lots":     lots,
+            "entry":    entry,
+            "sl":       sl,
+            "tp1":      tp1 if tp1 and tp1 > 0 else None,
+            "balance":  balance,
+            "risked":   round(balance * RISK_PCT, 2),
+        }), 200
 
     # 9. Place order with SL and TP1
     try:
