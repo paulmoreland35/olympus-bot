@@ -150,28 +150,16 @@ class TrailingStopManager:
         """
         Core logic for one position.
         Returns new SL price if an update is needed, else None.
+
+        Activation: price must move 1× SL distance in profit from entry.
+        This works with or without a TP on the position.
         """
         pos_id      = pos["id"]
         side        = pos.get("side", "").lower()
         entry       = pos.get("openPrice", 0)
         current_sl  = pos.get("stopLoss", 0)
-        take_profit = pos.get("takeProfit", 0)
         ticker      = pos.get("name", pos_id)
 
-        # If broker has no TP on the position, check our pre-registered store
-        # (covers cases where TP was dropped by the broker at order placement)
-        if not take_profit or take_profit <= 0:
-            order_id = str(pos.get("orderId", "") or pos.get("order_id", ""))
-            with self._lock:
-                # Check if we have a pending TP for any matching order
-                take_profit = self._pending_tp.get(order_id, 0)
-                # Also check state if already initialised
-                if not take_profit and pos_id in self._state:
-                    take_profit = self._state[pos_id].get("tp1", 0)
-
-        # Skip positions without TP — can't trail without a target
-        if not take_profit or take_profit <= 0:
-            return None
         if not current_sl or current_sl <= 0:
             return None
         if not entry or entry <= 0:
@@ -179,37 +167,34 @@ class TrailingStopManager:
         if side not in ("buy", "sell"):
             return None
 
-        # Validate TP is on the correct side of entry
-        if side == "buy"  and take_profit <= entry:
-            return None
-        if side == "sell" and take_profit >= entry:
-            return None
-
         current_price = self._get_current_price(pos)
         if current_price is None or current_price <= 0:
             logger.debug(f"[Trailing] {ticker}: could not determine current price — skipping")
             return None
 
-        # Halfway point between entry and TP
-        halfway = entry + (take_profit - entry) * 0.5   # works for both buy & sell
-        # (for sell, take_profit < entry so halfway < entry — correct)
+        # Activation trigger: price 1× SL distance in profit from entry
+        sl_dist  = abs(entry - current_sl)
+        if sl_dist == 0:
+            return None
+        if side == "buy":
+            activation_price = entry + sl_dist   # 1:1 in profit
+        else:
+            activation_price = entry - sl_dist
 
         with self._lock:
             state = self._state.get(pos_id)
 
             if state is None:
-                # First time seeing this position — initialise state
-                trail_dist = abs(entry - current_sl)
+                trail_dist = sl_dist
                 activated  = False
 
-                # If price is already past halfway (e.g. we picked up a manual trade
-                # mid-flight), activate immediately so we start trailing right away
-                if (side == "buy"  and current_price >= halfway) or \
-                   (side == "sell" and current_price <= halfway):
+                # Already past activation on first poll — activate immediately
+                if (side == "buy"  and current_price >= activation_price) or \
+                   (side == "sell" and current_price <= activation_price):
                     activated = True
                     logger.info(
-                        f"[Trailing] {ticker} ({pos_id}): detected past halfway on first poll "
-                        f"— activating immediately. entry={entry} halfway={halfway:.5f} "
+                        f"[Trailing] {ticker} ({pos_id}): past activation on first poll "
+                        f"— activating immediately. entry={entry} activation={activation_price:.5f} "
                         f"price={current_price:.5f}"
                     )
 
@@ -217,7 +202,6 @@ class TrailingStopManager:
                     "ticker":     ticker,
                     "side":       side,
                     "entry":      entry,
-                    "tp1":        take_profit,
                     "trail_dist": trail_dist,
                     "activated":  activated,
                     "last_sl":    current_sl,
@@ -225,23 +209,28 @@ class TrailingStopManager:
                 state = self._state[pos_id]
 
                 if not activated:
-                    return None  # not yet — just registered
+                    return None
 
-            # ----- Phase 1: waiting for halfway -----
+            # Recalculate activation_price using stored trail_dist (locked in at init)
+            trail_dist       = state["trail_dist"]
+            if side == "buy":
+                activation_price = state["entry"] + trail_dist
+            else:
+                activation_price = state["entry"] - trail_dist
+
+            # ----- Phase 1: waiting for 1:1 profit -----
             if not state["activated"]:
-                reached = (side == "buy"  and current_price >= halfway) or \
-                          (side == "sell" and current_price <= halfway)
+                reached = (side == "buy"  and current_price >= activation_price) or \
+                          (side == "sell" and current_price <= activation_price)
 
                 if not reached:
                     return None
 
-                # Lock in trail distance at the moment of activation
-                state["trail_dist"] = abs(entry - current_sl)
-                state["activated"]  = True
+                state["activated"] = True
                 logger.info(
-                    f"[Trailing] {ticker}: halfway reached! "
-                    f"entry={entry} halfway={halfway:.5f} price={current_price:.5f} "
-                    f"→ moving SL to breakeven ({entry}), trail_dist={state['trail_dist']:.5f}"
+                    f"[Trailing] {ticker}: 1:1 profit reached! "
+                    f"entry={entry} activation={activation_price:.5f} price={current_price:.5f} "
+                    f"→ moving SL to breakeven ({entry}), trail_dist={trail_dist:.5f}"
                 )
                 new_sl = entry
 
