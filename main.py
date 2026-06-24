@@ -565,18 +565,29 @@ def webhook():
             return jsonify({"status": "blocked", "reason": msg}), 403
         logger.info(f"[Risk] R:R check passed: {rr:.2f} ✓")
 
-    # 8. Calculate lot size — always dynamic 2% risk based on SL distance
-    try:
-        lots = calculate_lots(
-            balance=balance,
-            entry_price=entry,
-            stop_loss_price=sl,
-            risk_pct=RISK_PCT,
-            ticker=ticker,
-        )
-    except Exception as e:
-        logger.error(f"Position sizing error: {e}")
-        return jsonify({"error": "Position sizing failed", "detail": str(e)}), 400
+    # 8. Calculate lot size — check for per-symbol override first
+    override_key = f"LOT_OVERRIDE_{ticker.upper()}"
+    lot_override = os.getenv(override_key, "").strip()
+    if lot_override:
+        try:
+            lots = float(lot_override)
+            logger.info(f"[Risk] Using lot override for {ticker}: {lots} (via {override_key})")
+        except ValueError:
+            logger.warning(f"Invalid {override_key}='{lot_override}', falling back to dynamic sizing.")
+            lot_override = ""
+
+    if not lot_override:
+        try:
+            lots = calculate_lots(
+                balance=balance,
+                entry_price=entry,
+                stop_loss_price=sl,
+                risk_pct=RISK_PCT,
+                ticker=ticker,
+            )
+        except Exception as e:
+            logger.error(f"Position sizing error: {e}")
+            return jsonify({"error": "Position sizing failed", "detail": str(e)}), 400
 
     logger.info(
         f"Trade: {action.upper()} {ticker} | "
