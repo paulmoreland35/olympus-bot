@@ -85,7 +85,7 @@ class TradeLockerClient:
         if not accounts:
             raise ValueError("No accounts found on this TradeLocker profile.")
 
-        target_acc_num = os.getenv("TL_ACC_NUM", "").strip()
+        target_acc_num = (os.getenv("TL_ACC_NUM") or os.getenv("TL_ACCOUNT_NUM", "")).strip()
         if target_acc_num:
             # Match against any field that might hold the broker account number
             def _matches(a):
@@ -139,7 +139,7 @@ class TradeLockerClient:
             data = resp.json()
             accounts = data if isinstance(data, list) else data.get("accounts", [])
             if accounts:
-                target_num = os.getenv("TL_ACC_NUM", "").strip()
+                target_num = (os.getenv("TL_ACC_NUM") or os.getenv("TL_ACCOUNT_NUM", "")).strip()
                 account = next((a for a in accounts if str(a.get("accNum")) == target_num), accounts[0]) if target_num else accounts[0]
                 self.balance = float(
                     account.get("accountBalance")
