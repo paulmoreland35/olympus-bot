@@ -400,6 +400,35 @@ def report():
 
     return jsonify(out), 200
 
+@app.route("/report-debug", methods=["GET"])
+def report_debug():
+    """Temporary: dump raw ordersHistory shape to diagnose closed-trade parsing."""
+    out = {}
+    try:
+        client = TradeLockerClient(
+            base_url=TL_BASE_URL, email=TL_EMAIL,
+            password=TL_PASSWORD, server=TL_SERVER,
+        )
+        client.authenticate()
+        cfg = client._get(f"{client.base_url}/trade/config", timeout=15)
+        cfg_d = cfg.json().get("d", {})
+        cols = [c["id"] for c in cfg_d.get("ordersHistoryConfig", {}).get("columns", [])]
+        out["config_status"] = cfg.status_code
+        out["history_columns"] = cols
+        out["config_keys"] = list(cfg_d.keys())[:40]
+
+        hist = client._get(f"{client.base_url}/trade/accounts/{client.account_id}/ordersHistory")
+        out["history_status"] = hist.status_code
+        hd = hist.json().get("d", {})
+        out["history_d_keys"] = list(hd.keys()) if isinstance(hd, dict) else str(type(hd))
+        rows = hd.get("ordersHistory", []) if isinstance(hd, dict) else []
+        out["history_row_count"] = len(rows)
+        if cols and rows:
+            out["sample_orders"] = [dict(zip(cols, r)) for r in rows[:5]]
+    except Exception as e:
+        out["error"] = str(e)
+    return jsonify(out), 200
+
 @app.route("/send-report", methods=["POST", "GET"])
 def send_report():
     """Manually trigger the daily report email (for testing)."""
