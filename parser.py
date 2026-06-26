@@ -49,15 +49,43 @@ _SYMBOL_MAPS = {
 # Gold/Silver pass through unchanged on all brokers
 _METALS = {"XAUUSD", "XAGUSD"}
 
+# Common aliases that resolve to a canonical metal symbol regardless of broker
+_METAL_ALIASES = {
+    "GOLD": "XAUUSD", "XAU": "XAUUSD", "XAUUSD": "XAUUSD",
+    "SILVER": "XAGUSD", "XAG": "XAGUSD", "XAGUSD": "XAGUSD",
+}
+
 def _get_symbol_map() -> dict:
     server = os.getenv("TL_SERVER", "HEROFX").upper()
     return _SYMBOL_MAPS.get(server, _SYMBOL_MAPS["HEROFX"])
 
 def remap_symbol(ticker: str) -> str:
-    """Map a TradingView ticker to the correct broker instrument name."""
-    upper = ticker.upper()
+    """
+    Normalise ANY TradingView ticker to the correct broker instrument name,
+    so a single universal alert message ("ticker":"{{ticker}}") works on
+    every chart. Handles:
+      - exchange prefixes:  "OANDA:XAUUSD" -> "XAUUSD"
+      - perp/futures suffixes: "BTCUSD.P", "NAS100!" -> stripped
+      - metal aliases: "GOLD" -> "XAUUSD"
+      - per-broker index names (HEROFX vs LIVVFX) via _SYMBOL_MAPS
+    """
+    upper = ticker.upper().strip()
+
+    # Strip TradingView exchange prefix, e.g. "PEPPERSTONE:NAS100" -> "NAS100"
+    if ":" in upper:
+        upper = upper.split(":")[-1].strip()
+
+    # Strip common perpetual/futures markers
+    for suf in (".P", ".PERP", "PERP", "!"):
+        if upper.endswith(suf):
+            upper = upper[: -len(suf)].strip()
+
+    # Metals (and their aliases) pass through to the canonical symbol
+    if upper in _METAL_ALIASES:
+        return _METAL_ALIASES[upper]
     if upper in _METALS:
         return upper
+
     symbol_map = _get_symbol_map()
     return symbol_map.get(upper, upper)
 

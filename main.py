@@ -24,7 +24,7 @@ from dotenv import load_dotenv
 
 from tradelocker_client import TradeLockerClient
 from risk import calculate_lots, calculate_default_sl
-from parser import parse_olympus_message
+from parser import parse_olympus_message, remap_symbol
 from trailing import TrailingStopManager
 from trade_log import TradeLog
 from scanner import start_scanner_thread
@@ -516,6 +516,10 @@ def webhook():
     else:
         logger.warning("Empty request body received.")
         return jsonify({"error": "Empty request"}), 400
+
+    # Normalise the symbol so a universal "{{ticker}}" message works on any
+    # chart (strips exchange prefix, maps aliases + per-broker index names).
+    ticker = remap_symbol(ticker)
 
     # 4. Validate
     if action not in ("buy", "sell"):
