@@ -162,6 +162,14 @@ def _trailing_loop():
                 client.authenticate()
                 logger.info("[Trailing] Loop client authenticated.")
 
+            # Anchor today's opening balance once per day (for daily P&L in the
+            # report). Only hits the balance API when the calendar day flips.
+            if _day_open_date != _date.today():
+                try:
+                    _update_day_open(client.get_balance())
+                except Exception as anchor_err:
+                    logger.warning(f"[Trailing] Could not anchor day-open: {anchor_err}")
+
             positions    = client.get_open_positions()
             current_ids  = {p["id"] for p in positions}
 
@@ -398,56 +406,6 @@ def report():
     except Exception:
         pass
 
-    return jsonify(out), 200
-
-@app.route("/report-debug", methods=["GET"])
-def report_debug():
-    """Temporary: dump raw ordersHistory shape to diagnose closed-trade parsing."""
-    out = {}
-    try:
-        client = TradeLockerClient(
-            base_url=TL_BASE_URL, email=TL_EMAIL,
-            password=TL_PASSWORD, server=TL_SERVER,
-        )
-        client.authenticate()
-        cfg = client._get(f"{client.base_url}/trade/config", timeout=15)
-        cfg_d = cfg.json().get("d", {})
-        cols = [c["id"] for c in cfg_d.get("ordersHistoryConfig", {}).get("columns", [])]
-        out["config_status"] = cfg.status_code
-        out["history_columns"] = cols
-        out["config_keys"] = list(cfg_d.keys())[:40]
-
-        hist = client._get(f"{client.base_url}/trade/accounts/{client.account_id}/ordersHistory")
-        out["history_status"] = hist.status_code
-        hd = hist.json().get("d", {})
-        out["history_d_keys"] = list(hd.keys()) if isinstance(hd, dict) else str(type(hd))
-        rows = hd.get("ordersHistory", []) if isinstance(hd, dict) else []
-        out["history_row_count"] = len(rows)
-        if cols and rows:
-            orders = [dict(zip(cols, r)) for r in rows]
-            from collections import Counter, defaultdict
-            out["status_counts"] = dict(Counter(str(o.get("status")) for o in orders))
-            filled = [o for o in orders if str(o.get("status", "")).lower() == "filled"]
-            out["filled_count"] = len(filled)
-            by_pos = defaultdict(list)
-            for o in filled:
-                by_pos[str(o.get("positionId") or "")].append(o)
-            sizes = Counter(len(v) for v in by_pos.values())
-            out["filled_per_position_distribution"] = dict(sizes)
-            out["distinct_positions_with_filled"] = len(by_pos)
-            # show all filled orders for one multi-fill position
-            multi = next((v for v in by_pos.values() if len(v) >= 2), None)
-            if multi:
-                out["example_closed_position"] = [
-                    {"side": o.get("side"), "type": o.get("type"),
-                     "avgPrice": o.get("avgPrice"), "filledQty": o.get("filledQty"),
-                     "tradableInstrumentId": o.get("tradableInstrumentId"),
-                     "stopLoss": o.get("stopLoss"), "takeProfit": o.get("takeProfit"),
-                     "createdDate": o.get("createdDate")}
-                    for o in multi
-                ]
-    except Exception as e:
-        out["error"] = str(e)
     return jsonify(out), 200
 
 @app.route("/send-report", methods=["POST", "GET"])
