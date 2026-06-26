@@ -164,13 +164,13 @@ def _account_section(label: str, d: dict) -> str:
         html += "<h4 style='margin:12px 0 4px'>Closed trades</h4><table cellpadding='5' " \
                 "style='border-collapse:collapse;font-size:13px;border:1px solid #ddd'>" \
                 "<tr style='background:#f4f4f4'><th>Ticker</th><th>Side</th><th>Entry</th>" \
-                "<th>Exit</th><th>P&amp;L</th><th>Result</th></tr>"
+                "<th>Exit</th><th>P&amp;L</th><th>Result</th><th>Hit</th></tr>"
         for c in closes:
             color = "#0a0" if c.get("pnl", 0) >= 0 else "#c00"
             html += (f"<tr><td>{c.get('ticker')}</td><td>{c.get('side')}</td>"
                      f"<td>{c.get('entry')}</td><td>{c.get('exit')}</td>"
                      f"<td style='color:{color}'>{_fmt_money(c.get('pnl', 0))}</td>"
-                     f"<td>{c.get('outcome')}</td></tr>")
+                     f"<td>{c.get('outcome')}</td><td>{c.get('reason', '')}</td></tr>")
         html += "</table>"
 
     if opens:

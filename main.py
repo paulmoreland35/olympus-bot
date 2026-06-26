@@ -355,6 +355,7 @@ def report():
                 "qty": c.get("qty"), "entry": c.get("openPrice"),
                 "exit": c.get("closePrice"), "pnl": round(c.get("pnl", 0), 2),
                 "outcome": "WIN" if c.get("pnl", 0) > 0 else "LOSS" if c.get("pnl", 0) < 0 else "BE",
+                "reason": (c.get("exit_reason") or "").upper(),
                 "closed_at": c.get("closedAt"),
             }
             for c in closed

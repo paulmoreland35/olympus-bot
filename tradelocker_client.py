@@ -256,59 +256,111 @@ class TradeLockerClient:
         logger.debug(f"Fetched {len(normalised)} open positions.")
         return normalised
 
+    def _get(self, url: str, timeout: int = 20):
+        """GET with one automatic token refresh on 401."""
+        resp = self.session.get(url, timeout=timeout)
+        if resp.status_code == 401:
+            self.refresh_access_token()
+            resp = self.session.get(url, timeout=timeout)
+        return resp
+
+    def get_instrument_name_map(self) -> dict:
+        """Returns {tradableInstrumentId(str): symbol_name} for this account."""
+        try:
+            url = f"{self.base_url}/trade/accounts/{self.account_id}/instruments"
+            resp = self._get(url, timeout=15)
+            resp.raise_for_status()
+            instruments = resp.json().get("d", {}).get("instruments", [])
+            return {str(i.get("tradableInstrumentId")): i.get("name", "?") for i in instruments}
+        except Exception as e:
+            logger.warning(f"Could not build instrument name map: {e}")
+            return {}
+
     def get_closed_trades(self) -> list[dict]:
         """
-        Fetch closed-position history from TradeLocker (broker-side truth —
-        survives bot redeploys). Returns a list of normalised dicts:
-          {name, side, qty, openPrice, closePrice, pnl, closedAt}
+        Fetch closed trades from TradeLocker's ordersHistory (broker-side truth,
+        survives redeploys). Returns normalised dicts:
+          {name, side, qty, openPrice, closePrice, pnl, outcome, exit_reason, closedAt}
 
-        TradeLocker returns history in the same columnar format as positions:
-          {"d": {"columns": [...], "data": [[...], ...]}}
-        Endpoint name varies by version, so we try the known variants and
-        return [] gracefully on any failure (report must never crash on this).
+        TradeLocker's real format (per the official SDK):
+          - Column names come from GET /trade/config -> d.ordersHistoryConfig.columns
+          - Rows come from GET /trade/accounts/{id}/ordersHistory -> d.ordersHistory
+          - Each row is a raw array; zip with the columns to get a dict.
+        Filled orders are paired by positionId (entry + exit) to derive P&L.
+        Returns [] gracefully on any failure (report must never crash).
         """
-        endpoints = [
-            f"{self.base_url}/trade/accounts/{self.account_id}/positionsHistory",
-            f"{self.base_url}/trade/accounts/{self.account_id}/ordersHistory",
-        ]
-        for url in endpoints:
-            try:
-                resp = self.session.get(url, timeout=15)
-                if resp.status_code == 401:
-                    self.refresh_access_token()
-                    resp = self.session.get(url, timeout=15)
-                if resp.status_code != 200:
-                    continue
-                data = resp.json()
-                d = data.get("d", data)
-                columns = d.get("columns", [])
-                rows    = d.get("data",    [])
-                if columns and rows:
-                    records = [dict(zip(columns, row)) for row in rows]
-                elif isinstance(d, list):
-                    records = d
-                else:
-                    continue
+        try:
+            # 1. Column names from /trade/config
+            cfg = self._get(f"{self.base_url}/trade/config", timeout=15)
+            cfg.raise_for_status()
+            cfg_d = cfg.json().get("d", {})
+            cols  = [c["id"] for c in cfg_d.get("ordersHistoryConfig", {}).get("columns", [])]
+            if not cols:
+                logger.warning("[History] No ordersHistoryConfig columns in /trade/config.")
+                return []
 
-                normalised = []
-                for r in records:
-                    rec = dict(r)
-                    rec["name"]       = rec.get("name") or rec.get("symbol") or "?"
-                    rec["side"]       = str(rec.get("side", "")).lower()
-                    rec["qty"]        = float(rec.get("qty") or rec.get("lots") or 0)
-                    rec["openPrice"]  = float(rec.get("openPrice") or rec.get("avgPrice") or 0)
-                    rec["closePrice"] = float(rec.get("closePrice") or rec.get("exitPrice") or 0)
-                    rec["pnl"]        = float(rec.get("pnl") or rec.get("realisedPnl") or
-                                              rec.get("realizedPnl") or 0)
-                    rec["closedAt"]   = rec.get("closeTime") or rec.get("closedAt") or ""
-                    normalised.append(rec)
-                logger.info(f"Fetched {len(normalised)} closed trades from {url.split('/')[-1]}")
-                return normalised
-            except Exception as e:
-                logger.warning(f"Closed-trades fetch failed at {url.split('/')[-1]}: {e}")
-                continue
-        logger.warning("Could not fetch closed-trade history from any endpoint.")
-        return []
+            # 2. History rows
+            hist = self._get(f"{self.base_url}/trade/accounts/{self.account_id}/ordersHistory")
+            hist.raise_for_status()
+            rows = hist.json().get("d", {}).get("ordersHistory", [])
+            orders = [dict(zip(cols, r)) for r in rows]
+
+            # 3. Keep filled orders, group by positionId
+            from collections import defaultdict
+            from risk import _contract_size
+            name_map = self.get_instrument_name_map()
+
+            by_pos = defaultdict(list)
+            for o in orders:
+                if str(o.get("status", "")).lower() != "filled":
+                    continue
+                pid = str(o.get("positionId") or "")
+                if pid and pid != "0":
+                    by_pos[pid].append(o)
+
+            closed = []
+            for pid, olist in by_pos.items():
+                if len(olist) < 2:
+                    continue  # position still open (only the entry fill exists)
+                olist.sort(key=lambda o: float(o.get("createdDate") or 0))
+                entry_o, exit_o = olist[0], olist[-1]
+
+                ticker     = name_map.get(str(entry_o.get("tradableInstrumentId")), "?")
+                side       = str(entry_o.get("side", "")).lower()
+                qty        = float(entry_o.get("filledQty") or entry_o.get("qty") or 0)
+                open_px    = float(entry_o.get("avgPrice") or 0)
+                close_px   = float(exit_o.get("avgPrice") or 0)
+                contract   = _contract_size(ticker)
+                direction  = 1 if side == "buy" else -1
+                pnl        = (close_px - open_px) * direction * qty * contract
+
+                # Label exit as TP/SL by which level the close price is nearest to
+                tp = float(entry_o.get("takeProfit") or 0)
+                sl = float(entry_o.get("stopLoss") or 0)
+                reason = "manual"
+                if tp and abs(close_px - tp) <= abs(close_px - sl):
+                    reason = "tp"
+                elif sl:
+                    reason = "sl"
+
+                closed.append({
+                    "name":       ticker,
+                    "side":       side,
+                    "qty":        qty,
+                    "openPrice":  round(open_px, 5),
+                    "closePrice": round(close_px, 5),
+                    "pnl":        round(pnl, 2),
+                    "outcome":    "win" if pnl > 0 else "loss" if pnl < 0 else "be",
+                    "exit_reason": reason,
+                    "closedAt":   exit_o.get("createdDate") or "",
+                })
+
+            closed.sort(key=lambda c: float(c.get("closedAt") or 0))
+            logger.info(f"[History] Built {len(closed)} closed trades from ordersHistory.")
+            return closed
+        except Exception as e:
+            logger.warning(f"[History] Could not fetch closed trades: {e}")
+            return []
 
     def modify_position_sl(self, position_id: str, new_sl: float) -> dict:
         """
