@@ -116,6 +116,25 @@ def _insights(label: str, d: dict) -> list[str]:
     if dd:
         notes.append(f"&#9940; {label}: trading HALTED today — daily drawdown limit hit.")
 
+    # TradingView alert / webhook health
+    wh = d.get("webhooks", {})
+    last_wh = wh.get("last_received_utc")
+    if not last_wh:
+        notes.append(f"&#9888;&#65039; {label}: NO TradingView alerts received since the bot "
+                     f"last restarted — check your TradingView alerts are firing to the webhook URL.")
+    else:
+        try:
+            age_h = (datetime.utcnow() - datetime.fromisoformat(last_wh.replace("Z", "")).replace(tzinfo=None)).total_seconds() / 3600
+            total = wh.get("total_received", 0)
+            if age_h > 24:
+                notes.append(f"&#9888;&#65039; {label}: last TradingView alert was {age_h:.0f}h ago "
+                             f"({total} total) — alerts may have stopped firing.")
+            else:
+                notes.append(f"&#9989; {label}: TradingView alerts firing — last {age_h:.1f}h ago "
+                             f"({total} received).")
+        except Exception:
+            pass
+
     return notes
 
 

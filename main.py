@@ -71,6 +71,25 @@ TRAILING_POLL_SEC = int(os.getenv("TRAILING_POLL_SEC", "10"))
 trailing_manager = TrailingStopManager()
 trade_log        = TradeLog()
 
+# Tracks the most recent inbound TradingView webhook so we can confirm alerts
+# are actually reaching the bot (read by /report and the daily email).
+WEBHOOK_STATUS = {
+    "last_received_utc": None,   # ISO timestamp of the last webhook hit
+    "last_summary":      None,   # e.g. "BUY NAS100" or "rejected: bad secret"
+    "total_received":    0,      # count since this deploy
+    "last_accepted_utc": None,   # last webhook that passed auth + parsed OK
+}
+
+
+def _record_webhook(summary: str, accepted: bool = False):
+    from datetime import datetime as _dt, timezone as _tz
+    now = _dt.now(_tz.utc).isoformat()
+    WEBHOOK_STATUS["last_received_utc"] = now
+    WEBHOOK_STATUS["last_summary"]      = summary
+    WEBHOOK_STATUS["total_received"]   += 1
+    if accepted:
+        WEBHOOK_STATUS["last_accepted_utc"] = now
+
 # Start autonomous scanner at module load (runs under gunicorn, not just __main__)
 if os.getenv("TWELVE_DATA_API_KEY"):
     start_scanner_thread()
@@ -400,6 +419,9 @@ def report():
     except Exception as e:
         out["scanner"] = {"error": str(e)}
 
+    # --- Webhook (TradingView alerts) health ---
+    out["webhooks"] = dict(WEBHOOK_STATUS)
+
     # --- Local trade log (entries the bot itself placed this deploy) ---
     try:
         out["bot_logged_trades"] = trade_log.get_open_trades()
@@ -432,6 +454,9 @@ def webhook():
     raw_body = request.get_data(as_text=True).strip()
     data = request.get_json(silent=True)
 
+    # Record that *something* arrived (confirms TradingView is reaching us).
+    _record_webhook(summary=(raw_body[:60] or "JSON payload"))
+
     # Dry-run flag: runs the WHOLE pipeline (auth, balance, risk, sizing) but
     # NEVER places a real order. Lets us safely test against a live account.
     dry_run = bool(data.get("dry_run")) if data else False
@@ -443,6 +468,7 @@ def webhook():
         # 2. Verify secret
         if WEBHOOK_SECRET and data.get("secret") != WEBHOOK_SECRET:
             logger.warning("Webhook secret mismatch — rejected.")
+            _record_webhook(summary="rejected: bad/missing secret")
             return jsonify({"error": "Unauthorized"}), 401
 
         raw = data.get("raw", "").strip()
@@ -497,6 +523,9 @@ def webhook():
         return jsonify({"error": "Missing ticker"}), 400
     if entry <= 0:
         return jsonify({"error": "Invalid entry price"}), 400
+
+    # Alert accepted — auth passed and message parsed into a valid signal.
+    _record_webhook(summary=f"{action.upper()} {ticker}", accepted=True)
 
     # 5. Connect to TradeLocker
     try:
