@@ -424,7 +424,28 @@ def report_debug():
         rows = hd.get("ordersHistory", []) if isinstance(hd, dict) else []
         out["history_row_count"] = len(rows)
         if cols and rows:
-            out["sample_orders"] = [dict(zip(cols, r)) for r in rows[:5]]
+            orders = [dict(zip(cols, r)) for r in rows]
+            from collections import Counter, defaultdict
+            out["status_counts"] = dict(Counter(str(o.get("status")) for o in orders))
+            filled = [o for o in orders if str(o.get("status", "")).lower() == "filled"]
+            out["filled_count"] = len(filled)
+            by_pos = defaultdict(list)
+            for o in filled:
+                by_pos[str(o.get("positionId") or "")].append(o)
+            sizes = Counter(len(v) for v in by_pos.values())
+            out["filled_per_position_distribution"] = dict(sizes)
+            out["distinct_positions_with_filled"] = len(by_pos)
+            # show all filled orders for one multi-fill position
+            multi = next((v for v in by_pos.values() if len(v) >= 2), None)
+            if multi:
+                out["example_closed_position"] = [
+                    {"side": o.get("side"), "type": o.get("type"),
+                     "avgPrice": o.get("avgPrice"), "filledQty": o.get("filledQty"),
+                     "tradableInstrumentId": o.get("tradableInstrumentId"),
+                     "stopLoss": o.get("stopLoss"), "takeProfit": o.get("takeProfit"),
+                     "createdDate": o.get("createdDate")}
+                    for o in multi
+                ]
     except Exception as e:
         out["error"] = str(e)
     return jsonify(out), 200
