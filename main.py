@@ -81,12 +81,13 @@ WEBHOOK_STATUS = {
 }
 
 
-def _record_webhook(summary: str, accepted: bool = False):
+def _record_webhook(summary: str, accepted: bool = False, count: bool = True):
     from datetime import datetime as _dt, timezone as _tz
     now = _dt.now(_tz.utc).isoformat()
     WEBHOOK_STATUS["last_received_utc"] = now
     WEBHOOK_STATUS["last_summary"]      = summary
-    WEBHOOK_STATUS["total_received"]   += 1
+    if count:
+        WEBHOOK_STATUS["total_received"] += 1
     if accepted:
         WEBHOOK_STATUS["last_accepted_utc"] = now
 
@@ -468,7 +469,7 @@ def webhook():
         # 2. Verify secret
         if WEBHOOK_SECRET and data.get("secret") != WEBHOOK_SECRET:
             logger.warning("Webhook secret mismatch — rejected.")
-            _record_webhook(summary="rejected: bad/missing secret")
+            _record_webhook(summary="rejected: bad/missing secret", count=False)
             return jsonify({"error": "Unauthorized"}), 401
 
         raw = data.get("raw", "").strip()
@@ -525,7 +526,8 @@ def webhook():
         return jsonify({"error": "Invalid entry price"}), 400
 
     # Alert accepted — auth passed and message parsed into a valid signal.
-    _record_webhook(summary=f"{action.upper()} {ticker}", accepted=True)
+    # count=False: this request was already counted on arrival above.
+    _record_webhook(summary=f"{action.upper()} {ticker}", accepted=True, count=False)
 
     # 5. Connect to TradeLocker
     try:
