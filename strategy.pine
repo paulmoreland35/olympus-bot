@@ -1,0 +1,485 @@
+﻿//@version=5
+indicator("Olympus SMC v3 | ICT Gold", overlay=true, max_bars_back=500)
+
+// ===================================================================
+// OLYMPUS SMC v3 - ICT Smart Money Indicator for XAUUSD / NAS100 / US30
+//
+// MACRO BIAS      - Daily EMA200 + 4H EMA alignment
+// KILL ZONES      - London (06-12 UTC) + NY (12-21 UTC)
+// MARKET STRUCT   - Confirmed HH/HL or LH/LL using pivot points
+// PREMIUM/DISC    - 50% Fibonacci of 100-bar range
+// OTE ZONE        - 61.8-78.6% Fibonacci retracement
+// FAIR VALUE GAPS - 3-candle imbalance zones
+// ORDER BLOCKS    - Last opposing candle before displacement
+// LIQUIDITY SWEEP - Stop hunt below/above key levels
+// QUARTER THEORY  - $25 levels (gold institutional magnets)
+// CONFLUENCE      - Score 0-8; only signal at minimum threshold
+// ===================================================================
+
+// INPUTS ---------------
+g0 = "Macro Bias"
+daily_ema_len = input.int(200, "Daily EMA length",  group=g0)
+ema_fast_4h   = input.int(50,  "4H EMA fast",       group=g0)
+ema_slow_4h   = input.int(200, "4H EMA slow",       group=g0)
+
+g1 = "Market Structure"
+sw_left  = input.int(5, "Pivot left bars",  group=g1, minval=2, maxval=15)
+sw_right = input.int(5, "Pivot right bars", group=g1, minval=2, maxval=15)
+
+g2 = "ICT Setups"
+fvg_bars     = input.int(15,  "FVG lookback (bars)",          group=g2, minval=3,  maxval=30)
+sweep_bars   = input.int(20,  "Liquidity sweep range (bars)",  group=g2, minval=5,  maxval=50)
+sweep_expire = input.int(15,  "Sweep signal expires (bars)",   group=g2, minval=3,  maxval=30)
+ob_disp_len  = input.int(8,   "OB displacement length",        group=g2, minval=3,  maxval=20)
+ob_max_age   = input.int(100, "OB max age (bars)",             group=g2, minval=20, maxval=300)
+pd_len       = input.int(100, "Premium/Discount range",        group=g2, minval=30, maxval=300)
+
+g3 = "Session (UTC)"
+sess_start = input.int(6,  "Session open  (UTC hour)", group=g3, minval=0, maxval=23)
+sess_end   = input.int(21, "Session close (UTC hour)", group=g3, minval=0, maxval=23)
+
+g4 = "Confluence"
+min_score = input.int(4, "Min confluence score (0-8)", group=g4, minval=1, maxval=8)
+
+g5 = "Risk"
+atr_len  = input.int(14,    "ATR length",          group=g5)
+sl_buf   = input.float(0.3, "SL buffer (ATR x)",   group=g5, minval=0.0, step=0.1)
+tp_rr    = input.float(2.0, "TP R:R",              group=g5, minval=1.0, step=0.5)
+atr_sl   = input.float(1.5, "Fallback SL (ATR x)", group=g5, minval=0.5, step=0.1)
+
+g6 = "Display"
+show_labels  = input.bool(true,  "Show trade labels (Entry / SL / TP)", group=g6)
+show_lines   = input.bool(true,  "Show SL and TP lines",                group=g6)
+show_emas    = input.bool(true,  "Show EMA lines",                      group=g6)
+show_zones   = input.bool(true,  "Show Premium/Discount zones",         group=g6)
+show_ote     = input.bool(true,  "Show OTE zone",                       group=g6)
+show_session = input.bool(true,  "Show session background",             group=g6)
+line_extend  = input.int(20,     "SL/TP line length (bars right)",      group=g6, minval=5, maxval=100)
+
+// ATR ------------------
+atr = ta.atr(atr_len)
+
+//
+// 1. MACRO BIAS
+//
+ema200_daily = request.security(syminfo.tickerid, "D",   ta.ema(close, daily_ema_len), lookahead=barmerge.lookahead_off)
+ema_f4h      = request.security(syminfo.tickerid, "240", ta.ema(close, ema_fast_4h),   lookahead=barmerge.lookahead_off)
+ema_s4h      = request.security(syminfo.tickerid, "240", ta.ema(close, ema_slow_4h),   lookahead=barmerge.lookahead_off)
+
+biasBull = close > ema200_daily and ema_f4h > ema_s4h
+biasBear = close < ema200_daily and ema_f4h < ema_s4h
+
+//
+// 2. SESSION FILTER
+//
+utcH        = hour(time, "UTC")
+inSession   = utcH >= sess_start and utcH < sess_end
+londonHours = utcH >= 6  and utcH < 12
+nyHours     = utcH >= 12 and utcH < 21
+
+//
+// 3. MARKET STRUCTURE
+//
+ph = ta.pivothigh(high, sw_left, sw_right)
+pl = ta.pivotlow(low,  sw_left, sw_right)
+
+var float pH1 = na
+var float pH2 = na
+var float pL1 = na
+var float pL2 = na
+
+if not na(ph)
+    pH2 := pH1
+    pH1 := ph
+if not na(pl)
+    pL2 := pL1
+    pL1 := pl
+
+bullStruct = not na(pH1) and not na(pH2) and pH1 > pH2 and not na(pL1) and not na(pL2) and pL1 > pL2
+bearStruct = not na(pL1) and not na(pL2) and pL1 < pL2 and not na(pH1) and not na(pH2) and pH1 < pH2
+
+//
+// 4. PREMIUM / DISCOUNT + OTE ZONE
+//
+rng_hi  = ta.highest(high, pd_len)
+rng_lo  = ta.lowest(low,  pd_len)
+rng_mid = (rng_hi + rng_lo) / 2.0
+
+discount = close < rng_mid
+premium  = close > rng_mid
+
+ote_bull_lo = rng_lo + (rng_hi - rng_lo) * 0.214
+ote_bull_hi = rng_lo + (rng_hi - rng_lo) * 0.382
+ote_bear_lo = rng_lo + (rng_hi - rng_lo) * 0.618
+ote_bear_hi = rng_lo + (rng_hi - rng_lo) * 0.786
+
+inOTE_bull = close >= ote_bull_lo and close <= ote_bull_hi
+inOTE_bear = close >= ote_bear_lo and close <= ote_bear_hi
+
+//
+// 5. FAIR VALUE GAPS
+//
+var float bFVG_top = na
+var float bFVG_bot = na
+var int   bFVG_age = 999
+var float sFVG_top = na
+var float sFVG_bot = na
+var int   sFVG_age = 999
+
+for i = 1 to fvg_bars
+    j = i + 2
+    if not na(high[j]) and not na(low[i]) and high[j] < low[i]
+        bFVG_top := low[i]
+        bFVG_bot := high[j]
+        bFVG_age := i
+        break
+
+for i = 1 to fvg_bars
+    j = i + 2
+    if not na(low[j]) and not na(high[i]) and low[j] > high[i]
+        sFVG_top := low[j]
+        sFVG_bot := high[i]
+        sFVG_age := i
+        break
+
+atBullFVG = not na(bFVG_top) and close >= bFVG_bot - atr * 0.2 and close <= bFVG_top + atr * 0.1
+atBearFVG = not na(sFVG_top) and close >= sFVG_bot - atr * 0.1 and close <= sFVG_top + atr * 0.2
+
+//
+// 6. ORDER BLOCKS
+//
+bullDisplace = close > open and high > ta.highest(high[1], ob_disp_len)
+bearDisplace = close < open and low  < ta.lowest(low[1],  ob_disp_len)
+
+var float bullOB_hi  = na
+var float bullOB_lo  = na
+var int   bullOB_age = 999
+var float bearOB_hi  = na
+var float bearOB_lo  = na
+var int   bearOB_age = 999
+
+if bullDisplace
+    for k = 1 to 5
+        if close[k] < open[k]
+            bullOB_hi  := math.max(open[k], close[k])
+            bullOB_lo  := math.min(open[k], close[k])
+            bullOB_age := 0
+            break
+
+if bearDisplace
+    for k = 1 to 5
+        if close[k] > open[k]
+            bearOB_hi  := math.max(open[k], close[k])
+            bearOB_lo  := math.min(open[k], close[k])
+            bearOB_age := 0
+            break
+
+bullOB_age += 1
+bearOB_age += 1
+
+if not na(bullOB_lo) and close < bullOB_lo - atr * 0.5
+    bullOB_hi := na
+    bullOB_lo := na
+
+if not na(bearOB_hi) and close > bearOB_hi + atr * 0.5
+    bearOB_hi := na
+    bearOB_lo := na
+
+atBullOB = not na(bullOB_hi) and bullOB_age <= ob_max_age and low <= bullOB_hi and close >= bullOB_lo and close > open
+atBearOB = not na(bearOB_hi) and bearOB_age <= ob_max_age and high >= bearOB_lo and close <= bearOB_hi and close < open
+
+//
+// 7. LIQUIDITY SWEEPS
+//
+prevLow20  = ta.lowest(low[1],   sweep_bars)
+prevHigh20 = ta.highest(high[1], sweep_bars)
+
+sweepSSL = low  < prevLow20  and close > prevLow20  and close > open
+sweepBSL = high > prevHigh20 and close < prevHigh20 and close < open
+
+var bool  activeSweepBull = false
+var bool  activeSweepBear = false
+var int   sweepBullAge    = 999
+var int   sweepBearAge    = 999
+var float sweepBullLow    = na
+var float sweepBearHigh   = na
+
+if sweepSSL
+    activeSweepBull := true
+    sweepBullAge    := 0
+    sweepBullLow    := low
+
+if sweepBSL
+    activeSweepBear := true
+    sweepBearAge    := 0
+    sweepBearHigh   := high
+
+sweepBullAge += 1
+sweepBearAge += 1
+
+if sweepBullAge > sweep_expire
+    activeSweepBull := false
+if sweepBearAge > sweep_expire
+    activeSweepBear := false
+
+//
+// 8. QUARTER THEORY
+//
+q_size    = 25.0
+q_nearest = math.round(close / q_size) * q_size
+q_above   = math.ceil(close  / q_size) * q_size
+q_below   = math.floor(close / q_size) * q_size
+nearQ     = math.abs(close - q_nearest) / close * 100 < 0.12
+
+//
+// CONFLUENCE SCORING
+//
+bullScore  = 0
+bullScore += biasBull        ? 1 : 0
+bullScore += bullStruct      ? 1 : 0
+bullScore += inSession       ? 1 : 0
+bullScore += discount        ? 1 : 0
+bullScore += atBullFVG       ? 1 : 0
+bullScore += atBullOB        ? 1 : 0
+bullScore += activeSweepBull ? 1 : 0
+bullScore += nearQ           ? 1 : 0
+
+bearScore  = 0
+bearScore += biasBear        ? 1 : 0
+bearScore += bearStruct      ? 1 : 0
+bearScore += inSession       ? 1 : 0
+bearScore += premium         ? 1 : 0
+bearScore += atBearFVG       ? 1 : 0
+bearScore += atBearOB        ? 1 : 0
+bearScore += activeSweepBear ? 1 : 0
+bearScore += nearQ           ? 1 : 0
+
+//
+// SIGNAL CONDITIONS
+//
+longCond  = bullScore >= min_score and close > open
+shortCond = bearScore >= min_score and close < open
+
+// SL placement: sweep low > OB level > ATR fallback
+longSL  = activeSweepBull and not na(sweepBullLow)  ? sweepBullLow  - atr * sl_buf
+         : not na(bullOB_lo)                         ? bullOB_lo     - atr * sl_buf
+         : close - atr * atr_sl
+
+shortSL = activeSweepBear and not na(sweepBearHigh) ? sweepBearHigh + atr * sl_buf
+         : not na(bearOB_hi)                         ? bearOB_hi     + atr * sl_buf
+         : close + atr * atr_sl
+
+// TP: R:R multiple of the SL distance
+longTP  = close + (close - longSL)  * tp_rr
+shortTP = close - (shortSL - close) * tp_rr
+
+// Track active trade for TP/SL hit markers
+var float trackLongSL   = na
+var float trackLongTP   = na
+var float trackShortSL  = na
+var float trackShortTP  = na
+var bool  trackInLong   = false
+var bool  trackInShort  = false
+
+// Check if existing trade hit TP or SL this bar
+if trackInLong
+    if not na(trackLongTP) and high >= trackLongTP
+        label.new(bar_index, trackLongTP, text="TP HIT", style=label.style_label_down, color=color.new(color.lime, 0), textcolor=color.white, size=size.large)
+        trackInLong := false
+    else if not na(trackLongSL) and low <= trackLongSL
+        label.new(bar_index, trackLongSL, text="SL HIT", style=label.style_label_up, color=color.new(color.red, 0), textcolor=color.white, size=size.large)
+        trackInLong := false
+
+if trackInShort
+    if not na(trackShortTP) and low <= trackShortTP
+        label.new(bar_index, trackShortTP, text="TP HIT", style=label.style_label_up, color=color.new(color.lime, 0), textcolor=color.white, size=size.large)
+        trackInShort := false
+    else if not na(trackShortSL) and high >= trackShortSL
+        label.new(bar_index, trackShortSL, text="SL HIT", style=label.style_label_down, color=color.new(color.red, 0), textcolor=color.white, size=size.large)
+        trackInShort := false
+
+// Register new signals
+if longCond
+    trackInLong  := true
+    trackInShort := false
+    trackLongSL  := longSL
+    trackLongTP  := longTP
+    trackShortSL := na
+    trackShortTP := na
+
+if shortCond
+    trackInShort := true
+    trackInLong  := false
+    trackShortSL := shortSL
+    trackShortTP := shortTP
+    trackLongSL  := na
+    trackLongTP  := na
+
+//
+// ALERTS  (fires the bot webhook)
+//
+alertcondition(longCond,  title="BUY Signal",  message=" BUY {{ticker}} | 240 | ENTRY: {{close}} | SL: 0 | TP1: 0")
+alertcondition(shortCond, title="SELL Signal", message=" SELL {{ticker}} | 240 | ENTRY: {{close}} | SL: 0 | TP1: 0")
+
+if longCond
+    alert(" BUY " + syminfo.ticker + " | 240 | ENTRY: " + str.tostring(close, "#.####") + " | SL: " + str.tostring(longSL, "#.####") + " | TP1: " + str.tostring(longTP, "#.####"), alert.freq_once_per_bar_close)
+
+if shortCond
+    alert(" SELL " + syminfo.ticker + " | 240 | ENTRY: " + str.tostring(close, "#.####") + " | SL: " + str.tostring(shortSL, "#.####") + " | TP1: " + str.tostring(shortTP, "#.####"), alert.freq_once_per_bar_close)
+
+//
+// VISUALIZATIONS
+//
+
+// EMA Lines --------------
+plot(show_emas ? ema200_daily : na, "Daily EMA 200", color=color.new(color.yellow, 0),  linewidth=3, style=plot.style_circles)
+plot(show_emas ? ema_s4h      : na, "4H EMA 200",   color=color.new(color.white,  30), linewidth=2)
+plot(show_emas ? ema_f4h      : na, "4H EMA 50",    color=color.new(color.orange, 20), linewidth=1)
+
+// Premium / Discount Zones ---------
+p_hi  = plot(show_zones ? rng_hi  : na, "Range High", color=color.new(color.red,   80), linewidth=1)
+p_mid = plot(show_zones ? rng_mid : na, "P/D Mid",    color=color.new(color.white, 50), linewidth=1)
+p_lo  = plot(show_zones ? rng_lo  : na, "Range Low",  color=color.new(color.green, 80), linewidth=1)
+fill(p_lo,  p_mid, color=color.new(color.green, 93), title="Discount Zone")
+fill(p_mid, p_hi,  color=color.new(color.red,   93), title="Premium Zone")
+
+// OTE Zone ---------------
+pOTE_lo  = plot(show_ote and biasBull and discount ? ote_bull_lo : na, color=color.new(color.lime, 60))
+pOTE_hi  = plot(show_ote and biasBull and discount ? ote_bull_hi : na, color=color.new(color.lime, 60))
+fill(pOTE_lo, pOTE_hi, color=color.new(color.lime, 87), title="OTE Buy Zone")
+
+pOTE_lo2 = plot(show_ote and biasBear and premium ? ote_bear_lo : na, color=color.new(color.red, 60))
+pOTE_hi2 = plot(show_ote and biasBear and premium ? ote_bear_hi : na, color=color.new(color.red, 60))
+fill(pOTE_lo2, pOTE_hi2, color=color.new(color.red, 87), title="OTE Sell Zone")
+
+// FVG Boxes --------------
+var box bullFVG_box = na
+var box bearFVG_box = na
+
+if not na(bFVG_top) and not na(bFVG_bot)
+    box.delete(bullFVG_box)
+    bullFVG_box := box.new(bar_index - bFVG_age - 1, bFVG_top, bar_index + 30, bFVG_bot,
+         border_color=color.new(color.lime, 40), bgcolor=color.new(color.lime, 87),
+         text="FVG", text_color=color.lime, text_size=size.tiny, text_halign=text.align_right)
+
+if not na(sFVG_top) and not na(sFVG_bot)
+    box.delete(bearFVG_box)
+    bearFVG_box := box.new(bar_index - sFVG_age - 1, sFVG_top, bar_index + 30, sFVG_bot,
+         border_color=color.new(color.red, 40), bgcolor=color.new(color.red, 87),
+         text="FVG", text_color=color.red, text_size=size.tiny, text_halign=text.align_right)
+
+// Order Block Boxes -------------
+var box bullOB_box = na
+var box bearOB_box = na
+
+if not na(bullOB_hi) and bullOB_age <= ob_max_age
+    box.delete(bullOB_box)
+    bullOB_box := box.new(bar_index - bullOB_age, bullOB_hi, bar_index + 15, bullOB_lo,
+         border_color=color.new(color.aqua, 30), bgcolor=color.new(color.aqua, 92),
+         text="OB", text_color=color.aqua, text_size=size.tiny, text_halign=text.align_right)
+
+if not na(bearOB_hi) and bearOB_age <= ob_max_age
+    box.delete(bearOB_box)
+    bearOB_box := box.new(bar_index - bearOB_age, bearOB_hi, bar_index + 15, bearOB_lo,
+         border_color=color.new(color.fuchsia, 30), bgcolor=color.new(color.fuchsia, 92),
+         text="OB", text_color=color.fuchsia, text_size=size.tiny, text_halign=text.align_right)
+
+// Quarter Level Lines --------------
+plot(q_above, "Quarter Above", color=color.new(color.yellow, 80), linewidth=1, style=plot.style_circles)
+plot(q_below, "Quarter Below", color=color.new(color.yellow, 80), linewidth=1, style=plot.style_circles)
+
+// Liquidity Sweep Labels -----------
+plotshape(sweepSSL, "SSL Sweep", shape.labelup,   location.belowbar, color.new(color.lime, 10), size=size.small, text="SSL", textcolor=color.white)
+plotshape(sweepBSL, "BSL Sweep", shape.labeldown, location.abovebar, color.new(color.red,  10), size=size.small, text="BSL", textcolor=color.white)
+
+// Entry Arrows ---------------
+plotshape(longCond,  "BUY Signal",  shape.triangleup,   location.belowbar, color.lime,           size=size.large)
+plotshape(shortCond, "SELL Signal", shape.triangledown, location.abovebar, color.red,            size=size.large)
+
+// Trade Detail Labels (Entry / SL / TP) ------
+if longCond and show_labels
+    label.new(bar_index, low - atr * 0.5, text="BUY " + syminfo.ticker + "\nEntry: " + str.tostring(close, "#.##") + "\nSL: " + str.tostring(longSL, "#.##") + "\nTP: " + str.tostring(longTP, "#.##") + "\nScore: " + str.tostring(bullScore) + "/8", style=label.style_label_up, color=color.new(color.lime, 10), textcolor=color.white, size=size.normal)
+
+if shortCond and show_labels
+    label.new(bar_index, high + atr * 0.5, text="SELL " + syminfo.ticker + "\nEntry: " + str.tostring(close, "#.##") + "\nSL: " + str.tostring(shortSL, "#.##") + "\nTP: " + str.tostring(shortTP, "#.##") + "\nScore: " + str.tostring(bearScore) + "/8", style=label.style_label_down, color=color.new(color.red, 10), textcolor=color.white, size=size.normal)
+
+// SL / TP / Entry Lines (solid) -----------
+if longCond and show_lines
+    line.new(bar_index, longSL, bar_index + line_extend, longSL, color=color.red,   width=2, style=line.style_solid)
+    line.new(bar_index, longTP, bar_index + line_extend, longTP, color=color.lime,  width=2, style=line.style_solid)
+    line.new(bar_index, close,  bar_index + line_extend, close,  color=color.white, width=1, style=line.style_solid)
+
+if shortCond and show_lines
+    line.new(bar_index, shortSL, bar_index + line_extend, shortSL, color=color.red,   width=2, style=line.style_solid)
+    line.new(bar_index, shortTP, bar_index + line_extend, shortTP, color=color.lime,  width=2, style=line.style_solid)
+    line.new(bar_index, close,   bar_index + line_extend, close,   color=color.white, width=1, style=line.style_solid)
+
+// Session Background ------------
+bgcolor(show_session and londonHours and inSession ? color.new(color.blue,   95) : na, title="London Session")
+bgcolor(show_session and nyHours     and inSession ? color.new(color.purple, 95) : na, title="NY Session")
+
+//
+// DASHBOARD
+//
+var tbl = table.new(position.top_right, 3, 12,
+     bgcolor      = color.new(color.black, 68),
+     border_color = color.new(color.gray,  40), border_width=1,
+     frame_color  = color.gray, frame_width=1)
+
+colA = color.new(color.gray, 0)
+colG = color.lime
+colR = color.red
+colY = color.yellow
+
+cond(c) => c ? colG : colR
+
+if barstate.islast
+    table.cell(tbl, 0, 0, "OLYMPUS SMC v3",  text_color=colY, text_size=size.small, text_halign=text.align_left)
+    table.cell(tbl, 1, 0, syminfo.ticker,     text_color=colY, text_size=size.small)
+    table.cell(tbl, 2, 0, timeframe.period + "m", text_color=colY, text_size=size.small)
+
+    table.cell(tbl, 0, 1, "Daily Bias",   text_color=colA, text_size=size.small, text_halign=text.align_left)
+    table.cell(tbl, 1, 1, close > ema200_daily ? "BULL" : "BEAR", text_color=cond(close > ema200_daily), text_size=size.small)
+    table.cell(tbl, 2, 1, biasBull ? "4H OK" : biasBear ? "4H OK" : "4H SPLIT", text_color=biasBull or biasBear ? colG : colY, text_size=size.small)
+
+    table.cell(tbl, 0, 2, "Structure",    text_color=colA, text_size=size.small, text_halign=text.align_left)
+    table.cell(tbl, 1, 2, bullStruct ? "BULL HH/HL" : bearStruct ? "BEAR LH/LL" : "MIXED", text_color=bullStruct ? colG : bearStruct ? colR : colA, text_size=size.small)
+    table.cell(tbl, 2, 2, "", text_color=colA, text_size=size.small)
+
+    table.cell(tbl, 0, 3, "Session",      text_color=colA, text_size=size.small, text_halign=text.align_left)
+    table.cell(tbl, 1, 3, londonHours ? "LONDON" : nyHours ? "NEW YORK" : "CLOSED", text_color=inSession ? colG : colA, text_size=size.small)
+    table.cell(tbl, 2, 3, str.tostring(utcH) + ":00 UTC", text_color=colA, text_size=size.small)
+
+    table.cell(tbl, 0, 4, "P/D Zone",     text_color=colA, text_size=size.small, text_halign=text.align_left)
+    table.cell(tbl, 1, 4, discount ? "DISCOUNT" : premium ? "PREMIUM" : "MID", text_color=discount ? colG : premium ? colR : colA, text_size=size.small)
+    table.cell(tbl, 2, 4, inOTE_bull ? "IN OTE" : inOTE_bear ? "IN OTE" : "", text_color=colY, text_size=size.small)
+
+    table.cell(tbl, 0, 5, "Fair Value Gap", text_color=colA, text_size=size.small, text_halign=text.align_left)
+    table.cell(tbl, 1, 5, atBullFVG ? "BULL" : atBearFVG ? "BEAR" : "NONE", text_color=atBullFVG ? colG : atBearFVG ? colR : colA, text_size=size.small)
+    table.cell(tbl, 2, 5, not na(bFVG_top) ? str.tostring(math.round(bFVG_bot)) + "-" + str.tostring(math.round(bFVG_top)) : "", text_color=colG, text_size=size.tiny)
+
+    table.cell(tbl, 0, 6, "Order Block",  text_color=colA, text_size=size.small, text_halign=text.align_left)
+    table.cell(tbl, 1, 6, atBullOB ? "BULL" : atBearOB ? "BEAR" : "NONE", text_color=atBullOB ? colG : atBearOB ? colR : colA, text_size=size.small)
+    table.cell(tbl, 2, 6, "", text_color=colA, text_size=size.small)
+
+    table.cell(tbl, 0, 7, "Liq Sweep",   text_color=colA, text_size=size.small, text_halign=text.align_left)
+    table.cell(tbl, 1, 7, activeSweepBull ? "SSL (" + str.tostring(sweepBullAge) + "b ago)" : activeSweepBear ? "BSL (" + str.tostring(sweepBearAge) + "b ago)" : "NONE", text_color=activeSweepBull ? colG : activeSweepBear ? colR : colA, text_size=size.small)
+    table.cell(tbl, 2, 7, sweepSSL ? "NOW!" : sweepBSL ? "NOW!" : "", text_color=colY, text_size=size.small)
+
+    table.cell(tbl, 0, 8, "Quarter Level", text_color=colA, text_size=size.small, text_halign=text.align_left)
+    table.cell(tbl, 1, 8, str.tostring(q_nearest), text_color=nearQ ? colY : colA, text_size=size.small)
+    table.cell(tbl, 2, 8, nearQ ? "NEAR" : str.tostring(q_below) + " | " + str.tostring(q_above), text_color=nearQ ? colY : colA, text_size=size.tiny)
+
+    table.cell(tbl, 0, 9, "---", text_color=colA, text_size=size.small)
+    table.cell(tbl, 1, 9, "---",        text_color=colA, text_size=size.small)
+    table.cell(tbl, 2, 9, "---",       text_color=colA, text_size=size.small)
+
+    bsColor = bullScore >= min_score ? colG : bullScore >= min_score - 1 ? colY : colA
+    table.cell(tbl, 0, 10, "BULL SCORE",  text_color=colA, text_size=size.small, text_halign=text.align_left)
+    table.cell(tbl, 1, 10, str.tostring(bullScore) + " / 8", text_color=bsColor, text_size=size.normal)
+    table.cell(tbl, 2, 10, bullScore >= min_score ? ">>> BUY" : "WAIT", text_color=bullScore >= min_score ? colG : colA, text_size=size.small)
+
+    ssColor = bearScore >= min_score ? colR : bearScore >= min_score - 1 ? colY : colA
+    table.cell(tbl, 0, 11, "BEAR SCORE",  text_color=colA, text_size=size.small, text_halign=text.align_left)
+    table.cell(tbl, 1, 11, str.tostring(bearScore) + " / 8", text_color=ssColor, text_size=size.normal)
+    table.cell(tbl, 2, 11, bearScore >= min_score ? ">>> SELL" : "WAIT", text_color=bearScore >= min_score ? colR : colA, text_size=size.small)

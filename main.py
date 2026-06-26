@@ -346,27 +346,27 @@ def report():
             for p in open_positions
         ]
 
+        # Closed trades in the last 24h (daily scope). Win/loss is by price
+        # direction; the authoritative dollar P&L is the balance delta below.
         closed = client.get_closed_trades()
-        wins   = [c for c in closed if c.get("pnl", 0) > 0]
-        losses = [c for c in closed if c.get("pnl", 0) < 0]
+        wins   = [c for c in closed if c.get("outcome") == "win"]
+        losses = [c for c in closed if c.get("outcome") == "loss"]
         out["closed_trades"] = [
             {
                 "ticker": c.get("name"), "side": c.get("side"),
                 "qty": c.get("qty"), "entry": c.get("openPrice"),
-                "exit": c.get("closePrice"), "pnl": round(c.get("pnl", 0), 2),
-                "outcome": "WIN" if c.get("pnl", 0) > 0 else "LOSS" if c.get("pnl", 0) < 0 else "BE",
+                "exit": c.get("closePrice"), "move": c.get("move"),
+                "outcome": (c.get("outcome") or "").upper(),
                 "reason": (c.get("exit_reason") or "").upper(),
                 "closed_at": c.get("closedAt"),
             }
             for c in closed
         ]
-        total_pnl = sum(c.get("pnl", 0) for c in closed)
         out["stats"] = {
             "total_closed": len(closed),
             "wins": len(wins),
             "losses": len(losses),
             "win_rate_pct": round(100 * len(wins) / len(closed), 1) if closed else 0,
-            "net_pnl": round(total_pnl, 2),
         }
 
         # Drawdown state

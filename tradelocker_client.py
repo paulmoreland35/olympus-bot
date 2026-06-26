@@ -11,6 +11,7 @@ Key discoveries from live API inspection:
 """
 
 import os
+import time
 import requests
 import logging
 from typing import Optional
@@ -276,21 +277,30 @@ class TradeLockerClient:
             logger.warning(f"Could not build instrument name map: {e}")
             return {}
 
-    def get_closed_trades(self) -> list[dict]:
+    def get_closed_trades(self, since_ms: Optional[int] = None) -> list[dict]:
         """
         Fetch closed trades from TradeLocker's ordersHistory (broker-side truth,
-        survives redeploys). Returns normalised dicts:
-          {name, side, qty, openPrice, closePrice, pnl, outcome, exit_reason, closedAt}
+        survives redeploys). Returns dicts:
+          {name, side, qty, openPrice, closePrice, move, outcome, exit_reason, closedAt}
 
-        TradeLocker's real format (per the official SDK):
-          - Column names come from GET /trade/config -> d.ordersHistoryConfig.columns
-          - Rows come from GET /trade/accounts/{id}/ordersHistory -> d.ordersHistory
-          - Each row is a raw array; zip with the columns to get a dict.
-        Filled orders are paired by positionId (entry + exit) to derive P&L.
+        Per the official SDK, ordersHistory rows are raw arrays whose column
+        names come from GET /trade/config -> d.ordersHistoryConfig.columns.
+        Each closed position has 2+ filled orders sharing a positionId: the
+        market ENTRY (earliest) and the ENTRY-closing exit (latest).
+
+        WIN/LOSS is derived from PRICE DIRECTION (entry vs exit relative to
+        side) — this is reliable. Per-trade dollar P&L is NOT reconstructed
+        here (contract-size math across mixed instruments is unreliable);
+        the report takes authoritative dollar P&L from the balance delta.
+        exit_reason comes from the real exit-order TYPE.
+
+        since_ms: only return trades whose exit closed at/after this epoch-ms.
+                  Defaults to the last 24 hours (daily report scope).
         Returns [] gracefully on any failure (report must never crash).
         """
+        if since_ms is None:
+            since_ms = int(time.time() * 1000) - 24 * 3600 * 1000
         try:
-            # 1. Column names from /trade/config
             cfg = self._get(f"{self.base_url}/trade/config", timeout=15)
             cfg.raise_for_status()
             cfg_d = cfg.json().get("d", {})
@@ -299,15 +309,12 @@ class TradeLockerClient:
                 logger.warning("[History] No ordersHistoryConfig columns in /trade/config.")
                 return []
 
-            # 2. History rows
             hist = self._get(f"{self.base_url}/trade/accounts/{self.account_id}/ordersHistory")
             hist.raise_for_status()
             rows = hist.json().get("d", {}).get("ordersHistory", [])
             orders = [dict(zip(cols, r)) for r in rows]
 
-            # 3. Keep filled orders, group by positionId
             from collections import defaultdict
-            from risk import _contract_size
             name_map = self.get_instrument_name_map()
 
             by_pos = defaultdict(list)
@@ -318,6 +325,14 @@ class TradeLockerClient:
                 if pid and pid != "0":
                     by_pos[pid].append(o)
 
+            def _type_to_reason(t: str) -> str:
+                t = (t or "").lower()
+                if "trailing" in t:        return "trailing"
+                if "stop" in t:            return "sl"
+                if "limit" in t:           return "tp"
+                if "market" in t:          return "manual"
+                return t or "?"
+
             closed = []
             for pid, olist in by_pos.items():
                 if len(olist) < 2:
@@ -325,23 +340,22 @@ class TradeLockerClient:
                 olist.sort(key=lambda o: float(o.get("createdDate") or 0))
                 entry_o, exit_o = olist[0], olist[-1]
 
-                ticker     = name_map.get(str(entry_o.get("tradableInstrumentId")), "?")
-                side       = str(entry_o.get("side", "")).lower()
-                qty        = float(entry_o.get("filledQty") or entry_o.get("qty") or 0)
-                open_px    = float(entry_o.get("avgPrice") or 0)
-                close_px   = float(exit_o.get("avgPrice") or 0)
-                contract   = _contract_size(ticker)
-                direction  = 1 if side == "buy" else -1
-                pnl        = (close_px - open_px) * direction * qty * contract
+                closed_at = float(exit_o.get("createdDate") or 0)
+                if closed_at < since_ms:
+                    continue  # outside the report window
 
-                # Label exit as TP/SL by which level the close price is nearest to
-                tp = float(entry_o.get("takeProfit") or 0)
-                sl = float(entry_o.get("stopLoss") or 0)
-                reason = "manual"
-                if tp and abs(close_px - tp) <= abs(close_px - sl):
-                    reason = "tp"
-                elif sl:
-                    reason = "sl"
+                ticker   = name_map.get(str(entry_o.get("tradableInstrumentId")), "?")
+                side     = str(entry_o.get("side", "")).lower()
+                qty      = float(entry_o.get("filledQty") or entry_o.get("qty") or 0)
+                open_px  = float(entry_o.get("avgPrice") or 0)
+                close_px = float(exit_o.get("avgPrice") or 0)
+
+                # Win/loss strictly by price direction (reliable, no contract math)
+                if side == "buy":
+                    won = close_px > open_px
+                else:
+                    won = close_px < open_px
+                move = round(close_px - open_px, 5)
 
                 closed.append({
                     "name":       ticker,
@@ -349,14 +363,15 @@ class TradeLockerClient:
                     "qty":        qty,
                     "openPrice":  round(open_px, 5),
                     "closePrice": round(close_px, 5),
-                    "pnl":        round(pnl, 2),
-                    "outcome":    "win" if pnl > 0 else "loss" if pnl < 0 else "be",
-                    "exit_reason": reason,
-                    "closedAt":   exit_o.get("createdDate") or "",
+                    "move":       move,
+                    "outcome":    "win" if won else "loss",
+                    "exit_reason": _type_to_reason(exit_o.get("type")),
+                    "closedAt":   int(closed_at),
                 })
 
-            closed.sort(key=lambda c: float(c.get("closedAt") or 0))
-            logger.info(f"[History] Built {len(closed)} closed trades from ordersHistory.")
+            closed.sort(key=lambda c: c.get("closedAt") or 0)
+            logger.info(f"[History] Built {len(closed)} closed trades in window "
+                        f"(since {since_ms}).")
             return closed
         except Exception as e:
             logger.warning(f"[History] Could not fetch closed trades: {e}")

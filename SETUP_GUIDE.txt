@@ -1,0 +1,148 @@
+============================================================
+  OLYMPUS → TRADELOCKER AUTO-TRADER — SETUP GUIDE
+============================================================
+
+STEP 1 — INSTALL GIT (if you don't have it)
+------------------------------------------------------------
+Download from: https://git-scm.com/download/win
+Install with all defaults. Then open Command Prompt or
+PowerShell and run:
+
+  git --version   ← should print a version number
+
+
+STEP 2 — UPLOAD PROJECT TO GITHUB
+------------------------------------------------------------
+1. Go to https://github.com and create a free account (or log in).
+2. Click the "+" icon → "New repository"
+3. Name it: olympus-bot
+4. Set to PRIVATE (important — contains your broker details)
+5. Click "Create repository"
+
+In Command Prompt, run these commands one by one:
+
+  cd C:\Users\paulm\olympus-bot
+  git init
+  git add main.py tradelocker_client.py risk.py requirements.txt Procfile runtime.txt .env.example .gitignore
+  git commit -m "Initial commit"
+  git branch -M main
+  git remote add origin https://github.com/YOUR_GITHUB_USERNAME/olympus-bot.git
+  git push -u origin main
+
+NOTE: Do NOT add .env to git — it contains your password.
+      It is already in .gitignore so this is handled automatically.
+
+
+STEP 3 — DEPLOY TO RAILWAY
+------------------------------------------------------------
+1. Go to https://railway.app and sign up with your GitHub account.
+2. Click "New Project" → "Deploy from GitHub repo"
+3. Select your "olympus-bot" repository.
+4. Railway will auto-detect Python and start building.
+
+5. Once deployed, click your project → "Variables" tab.
+   Add these environment variables one by one:
+
+   TL_BASE_URL     = https://members.livvfxtrading.com/backend-api
+   TL_EMAIL        = paulmoreland35@gmail.com
+   TL_PASSWORD     = NzxDYXNhk3@
+   TL_SERVER       = LIVVFX
+   RISK_PCT        = 0.02
+   DEFAULT_SL_PCT  = 0.01
+   WEBHOOK_SECRET  = olympus_paul_2024
+
+6. Click "Settings" → "Generate Domain"
+   Copy your public URL — it will look like:
+   https://olympus-bot-production-xxxx.up.railway.app
+
+   Your webhook URL will be:
+   https://olympus-bot-production-xxxx.up.railway.app/webhook
+
+
+STEP 4 — TRADINGVIEW ALERT SETUP
+------------------------------------------------------------
+You need to create TWO alerts on your Olympus indicator:
+one for LONG signals, one for SHORT signals.
+
+--- LONG ALERT ---
+Condition:   Olympus → Any alert() function call
+Webhook URL: https://YOUR-RAILWAY-URL.up.railway.app/webhook
+Message (copy exactly — edit ticker if needed):
+
+{
+  "secret": "olympus_paul_2024",
+  "action": "buy",
+  "ticker": "{{ticker}}",
+  "price": {{close}},
+  "sl": 0,
+  "tp": 0
+}
+
+--- SHORT ALERT ---
+Condition:   Olympus → Any alert() function call
+Webhook URL: https://YOUR-RAILWAY-URL.up.railway.app/webhook
+Message (copy exactly):
+
+{
+  "secret": "olympus_paul_2024",
+  "action": "sell",
+  "ticker": "{{ticker}}",
+  "price": {{close}},
+  "sl": 0,
+  "tp": 0
+}
+
+NOTE ON STOP LOSS:
+  "sl": 0  means the bot will auto-calculate a 1% stop loss
+  from entry price. If your Olympus scanner shows a specific
+  SL level on the chart, you can hardcode it per alert, e.g.:
+  "sl": 1.07500
+
+NOTE ON TAKE PROFIT:
+  "tp": 0  means no take profit — trade runs until you close it.
+  To set a TP, replace 0 with the price level.
+
+
+STEP 5 — TEST IT
+------------------------------------------------------------
+1. Visit your Railway URL in a browser:
+   https://YOUR-RAILWAY-URL.up.railway.app/
+   You should see: {"status": "Olympus bot is running ✓"}
+
+2. Send a test webhook manually using curl (in Command Prompt):
+
+   curl -X POST https://YOUR-RAILWAY-URL.up.railway.app/webhook \
+     -H "Content-Type: application/json" \
+     -d "{\"secret\":\"olympus_paul_2024\",\"action\":\"buy\",\"ticker\":\"EURUSD\",\"price\":1.08500,\"sl\":1.07800,\"tp\":0}"
+
+3. Check Railway logs (Deployments → View Logs) to see
+   the full trade execution details.
+
+
+STEP 6 — GO LIVE
+------------------------------------------------------------
+Once the test trade appears in your TradeLocker account,
+enable your TradingView alerts and the bot will trade
+every Olympus signal automatically with 2% risk per trade.
+
+============================================================
+  HOW RISK IS CALCULATED (example)
+============================================================
+
+  Account Balance:  $10,000
+  Risk per trade:   2% = $200
+  Entry price:      1.08500 (EURUSD)
+  Stop loss:        1.07800
+  SL distance:      0.00700 (70 pips)
+
+  Dollar risk per lot = 0.00700 × 100,000 = $700
+  Lot size = $200 / $700 = 0.28 lots → rounded to 0.28
+
+  This means if stopped out you lose exactly $196 (~2%).
+
+============================================================
+  SUPPORT
+============================================================
+Railway logs show every trade attempt with full details.
+If a trade fails the error message explains exactly why.
+============================================================
