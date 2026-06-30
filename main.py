@@ -51,6 +51,10 @@ TL_EMAIL       = os.getenv("TL_EMAIL",          "")
 TL_PASSWORD    = os.getenv("TL_PASSWORD",       "")
 TL_SERVER      = os.getenv("TL_SERVER_LIVE") or os.getenv("TL_SERVER", "LIVVFX")
 WEBHOOK_SECRET = os.getenv("WEBHOOK_SECRET",    "")
+# Mirror/forward: if set, every accepted webhook signal is relayed to this
+# partner bot's /webhook so it trades the same alerts (sized to its own account).
+FORWARD_TO_URL    = os.getenv("FORWARD_TO_URL",    "")
+FORWARD_TO_SECRET = os.getenv("FORWARD_TO_SECRET", "")
 RISK_PCT       = float(os.getenv("RISK_PCT",    "0.02"))
 DEFAULT_SL_PCT = float(os.getenv("DEFAULT_SL_PCT", "0.01"))
 
@@ -79,6 +83,32 @@ WEBHOOK_STATUS = {
     "total_received":    0,      # count since this deploy
     "last_accepted_utc": None,   # last webhook that passed auth + parsed OK
 }
+
+
+def _forward_signal(action, ticker, entry, sl, tp1, dry_run):
+    """Relay an accepted signal to a partner bot (mirror). Best-effort."""
+    if not FORWARD_TO_URL:
+        return
+    try:
+        import requests as _rq
+        payload = {
+            "secret": FORWARD_TO_SECRET,
+            "action": action,
+            "ticker": ticker,
+            "price":  entry,
+        }
+        if sl and sl > 0:
+            payload["sl"] = sl
+        if tp1 and tp1 > 0:
+            payload["tp"] = tp1
+        if dry_run:
+            payload["dry_run"] = True
+        # Short timeout so a slow/down partner never blocks our own trade.
+        r = _rq.post(FORWARD_TO_URL, json=payload, timeout=8)
+        logger.info(f"[Mirror] Forwarded {action.upper()} {ticker} -> {FORWARD_TO_URL} "
+                    f"(status {r.status_code})")
+    except Exception as e:
+        logger.warning(f"[Mirror] Forward failed (own trade unaffected): {e}")
 
 
 def _record_webhook(summary: str, accepted: bool = False, count: bool = True):
@@ -562,6 +592,11 @@ def webhook():
     # Alert accepted — auth passed and message parsed into a valid signal.
     # count=False: this request was already counted on arrival above.
     _record_webhook(summary=f"{action.upper()} {ticker}", accepted=True, count=False)
+
+    # Mirror: forward this signal to a partner bot (e.g. Derrick's) so it
+    # trades the same alerts, sized to its own account. Best-effort and
+    # non-blocking — never let a mirror failure affect this bot's own trade.
+    _forward_signal(action, ticker, entry, sl, tp1, dry_run)
 
     # 5. Connect to TradeLocker
     try:
