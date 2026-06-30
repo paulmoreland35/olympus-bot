@@ -374,9 +374,15 @@ def report():
             for p in open_positions
         ]
 
-        # Closed trades in the last 24h (daily scope). Win/loss is by price
-        # direction; the authoritative dollar P&L is the balance delta below.
-        closed = client.get_closed_trades()
+        # Closed trades window. Default 24h (daily scope); ?days=N widens it
+        # for per-symbol performance analysis. Win/loss is by price direction.
+        try:
+            days = max(1, min(int(request.args.get("days", "1")), 90))
+        except Exception:
+            days = 1
+        since_ms = int(time.time() * 1000) - days * 24 * 3600 * 1000
+        closed = client.get_closed_trades(since_ms=since_ms)
+        out["window_days"] = days
         wins   = [c for c in closed if c.get("outcome") == "win"]
         losses = [c for c in closed if c.get("outcome") == "loss"]
         out["closed_trades"] = [
