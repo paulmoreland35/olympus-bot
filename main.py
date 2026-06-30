@@ -437,6 +437,30 @@ def report():
 
     return jsonify(out), 200
 
+@app.route("/scalp-backtest", methods=["GET"])
+def scalp_backtest():
+    """
+    Dry-run gold scalp backtest — places NO trades. Tunable via query params:
+      ?interval=5min&bars=1000&tp_usd=5&sl_usd=5&lot=0.10&spread_price=0.30
+      &ema_fast=9&ema_slow=21&max_hold=24
+    """
+    from scalper import run_backtest
+    def f(name, default, cast):
+        try:    return cast(request.args.get(name, default))
+        except Exception: return default
+    result = run_backtest(
+        interval=request.args.get("interval", "5min"),
+        bars=f("bars", 1000, int),
+        ema_fast=f("ema_fast", 9, int),
+        ema_slow=f("ema_slow", 21, int),
+        tp_usd=f("tp_usd", 5.0, float),
+        sl_usd=f("sl_usd", 5.0, float),
+        lot=f("lot", 0.10, float),
+        spread_price=f("spread_price", 0.30, float),
+        max_hold=f("max_hold", 24, int),
+    )
+    return jsonify(result), 200
+
 @app.route("/send-report", methods=["POST", "GET"])
 def send_report():
     """Manually trigger the daily report email (for testing)."""
