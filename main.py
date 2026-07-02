@@ -491,6 +491,34 @@ def scalp_backtest():
     )
     return jsonify(result), 200
 
+@app.route("/reset-drawdown", methods=["POST", "GET"])
+def reset_drawdown():
+    """
+    Re-anchor the daily drawdown baseline to the CURRENT balance, clearing a
+    halt so the bot can trade again. Secret-protected.
+    """
+    secret = request.args.get("secret") or (request.get_json(silent=True) or {}).get("secret")
+    if WEBHOOK_SECRET and secret != WEBHOOK_SECRET:
+        return jsonify({"error": "Unauthorized"}), 401
+
+    global _day_open_balance, _day_open_date
+    try:
+        client = TradeLockerClient(
+            base_url=TL_BASE_URL, email=TL_EMAIL,
+            password=TL_PASSWORD, server=TL_SERVER,
+        )
+        client.authenticate()
+        bal = client.get_balance()
+    except Exception as e:
+        return jsonify({"error": "Broker auth/balance failed", "detail": str(e)}), 502
+
+    with _drawdown_lock:
+        _day_open_balance = bal
+        _day_open_date    = _date.today()
+    logger.info(f"[Drawdown] Manually reset — new day-open anchor ${bal:,.2f}. Bot un-halted.")
+    return jsonify({"status": "drawdown_reset", "new_day_open_balance": round(bal, 2),
+                    "halted": False}), 200
+
 @app.route("/send-report", methods=["POST", "GET"])
 def send_report():
     """Manually trigger the daily report email (for testing)."""
