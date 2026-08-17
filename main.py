@@ -494,6 +494,58 @@ def scalp_backtest():
     )
     return jsonify(result), 200
 
+@app.route("/fix-open-tps", methods=["POST", "GET"])
+def fix_open_tps():
+    """
+    Attach a take-profit to any open position that is missing one, derived
+    from its entry + stop distance at DEFAULT_TP_RR (or ?rr=N override).
+    Secret-protected. Lets me set TPs on already-open trades on request.
+    """
+    secret = request.args.get("secret") or (request.get_json(silent=True) or {}).get("secret")
+    if WEBHOOK_SECRET and secret != WEBHOOK_SECRET:
+        return jsonify({"error": "Unauthorized"}), 401
+    try:
+        rr = float(request.args.get("rr", DEFAULT_TP_RR))
+    except Exception:
+        rr = DEFAULT_TP_RR
+
+    try:
+        client = TradeLockerClient(
+            base_url=TL_BASE_URL, email=TL_EMAIL,
+            password=TL_PASSWORD, server=TL_SERVER,
+        )
+        client.authenticate()
+        positions = client.get_open_positions()
+    except Exception as e:
+        return jsonify({"error": "Broker connection failed", "detail": str(e)}), 502
+
+    fixed, skipped = [], []
+    for p in positions:
+        pid   = str(p.get("id"))
+        entry = float(p.get("openPrice") or 0)
+        sl    = float(p.get("stopLoss") or 0)
+        tp    = float(p.get("takeProfit") or 0)
+        side  = str(p.get("side", "")).lower()
+        name  = p.get("name")
+        if tp > 0:
+            skipped.append({"ticker": name, "reason": "already has TP", "tp": tp})
+            continue
+        if entry <= 0 or sl <= 0:
+            skipped.append({"ticker": name, "reason": "no entry/SL to derive TP from"})
+            continue
+        sl_dist = abs(entry - sl)
+        new_tp  = (entry + sl_dist * rr) if side == "buy" else (entry - sl_dist * rr)
+        new_tp  = round(new_tp, 5)
+        try:
+            client.modify_position_tp(pid, new_tp)
+            fixed.append({"ticker": name, "side": side, "entry": entry,
+                          "sl": sl, "new_tp": new_tp, "rr": rr})
+        except Exception as e:
+            skipped.append({"ticker": name, "reason": f"broker error: {e}"})
+
+    return jsonify({"fixed": fixed, "skipped": skipped,
+                    "open_positions": len(positions)}), 200
+
 @app.route("/reset-drawdown", methods=["POST", "GET"])
 def reset_drawdown():
     """

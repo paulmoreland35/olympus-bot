@@ -398,6 +398,27 @@ class TradeLockerClient:
         logger.info(f"SL updated → position {position_id} new SL={new_sl}")
         return result
 
+    def modify_position_tp(self, position_id: str, new_tp: float) -> dict:
+        """
+        Set/move the take profit on an open position to new_tp.
+        Uses PUT /trade/accounts/{accountId}/positions/{positionId}.
+        """
+        url = f"{self.base_url}/trade/accounts/{self.account_id}/positions/{position_id}"
+        payload = {
+            "takeProfit":     round(new_tp, 5),
+            "takeProfitType": "absolute",
+        }
+        resp = self.session.put(url, json=payload, timeout=10)
+        if resp.status_code == 401:
+            self.refresh_access_token()
+            resp = self.session.put(url, json=payload, timeout=10)
+        resp.raise_for_status()
+        result = resp.json()
+        if result.get("s") == "error":
+            raise RuntimeError(f"Broker error modifying TP: {result.get('errmsg', result)}")
+        logger.info(f"TP updated → position {position_id} new TP={new_tp}")
+        return result
+
     # ------------------------------------------------------------------
     # Orders
     # ------------------------------------------------------------------
