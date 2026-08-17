@@ -57,6 +57,9 @@ FORWARD_TO_URL    = os.getenv("FORWARD_TO_URL",    "")
 FORWARD_TO_SECRET = os.getenv("FORWARD_TO_SECRET", "")
 RISK_PCT       = float(os.getenv("RISK_PCT",    "0.02"))
 DEFAULT_SL_PCT = float(os.getenv("DEFAULT_SL_PCT", "0.01"))
+# When an alert has no take-profit, set TP at this multiple of the SL distance
+# (e.g. 1.5 = risk:reward of 1.5:1). Tunable via env without a code change.
+DEFAULT_TP_RR  = float(os.getenv("DEFAULT_TP_RR", "1.5"))
 
 # Daily drawdown limit — bot stops taking new trades for the rest of the day
 # once account balance drops this % below the day's opening balance.
@@ -685,6 +688,16 @@ def webhook():
     if not sl or sl <= 0:
         sl = calculate_default_sl(entry, action, DEFAULT_SL_PCT)
         logger.info(f"Using default SL: {sl}")
+
+    # 7a. Fallback TP if missing — signals like "Buy Signal/Sell Signal" send no
+    #     take-profit, so derive one from the SL distance at DEFAULT_TP_RR.
+    if (not tp1 or tp1 <= 0) and sl and sl > 0:
+        sl_dist = abs(entry - sl)
+        if sl_dist > 0:
+            tp1 = (entry + sl_dist * DEFAULT_TP_RR) if action == "buy" \
+                  else (entry - sl_dist * DEFAULT_TP_RR)
+            tp1 = round(tp1, 5)
+            logger.info(f"Using default TP (R:R {DEFAULT_TP_RR}): {tp1}")
 
     # 7b. Minimum R:R filter — TP must be at least 1.0x the SL distance
     #     Olympus signals are 1:1 by design, so we allow anything >= 1.0.
