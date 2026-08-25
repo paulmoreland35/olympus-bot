@@ -94,6 +94,34 @@ It automatically extracts:
 - **Stop Loss**
 - **Take Profit 1**
 
+## 👥 Trading on Multiple Accounts
+
+To run the same TradingView signals on more than one TradeLocker account
+(e.g. a partner's account, or a second funded account of your own):
+
+1. **Deploy this repo again as a separate Railway service** for each
+   additional account, with its own `TL_EMAIL` / `TL_PASSWORD` / `TL_SERVER`
+   / `WEBHOOK_SECRET` variables (Step 2–3 above). Each deployment gets its
+   own webhook URL, e.g. `https://account2-bot.up.railway.app/webhook`.
+2. On your **main** bot (the one TradingView actually sends alerts to), add:
+
+   | Variable | Description |
+   |----------|-------------|
+   | `FORWARD_TO_URL_2` | Webhook URL of account 2's deployment |
+   | `FORWARD_TO_SECRET_2` | That deployment's `WEBHOOK_SECRET` |
+   | `FORWARD_TO_LABEL_2` | Optional name shown in logs (e.g. `Derrick`) |
+   | `FORWARD_TO_URL_3` | Webhook URL of account 3's deployment |
+   | `FORWARD_TO_SECRET_3` | That deployment's `WEBHOOK_SECRET` |
+   | `FORWARD_TO_LABEL_3` | Optional name shown in logs |
+
+   (`FORWARD_TO_URL` / `FORWARD_TO_SECRET`, no number, still works for the
+   first partner account — this just adds `_2`, `_3`, etc. for more.)
+
+Every accepted alert is now relayed to all configured accounts, each sized
+by its **own** balance and risk settings — a slow or failed partner never
+blocks your own trade. Add each account's `/report` URL to `REPORT_SOURCES`
+on whichever bot has `RESEND_API_KEY` set to include it in the daily email.
+
 ## 🔄 Symbol Mapping (for indices)
 TradeLocker uses different symbol names for indices:
 

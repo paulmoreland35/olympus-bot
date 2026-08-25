@@ -51,10 +51,44 @@ TL_EMAIL       = os.getenv("TL_EMAIL",          "")
 TL_PASSWORD    = os.getenv("TL_PASSWORD",       "")
 TL_SERVER      = os.getenv("TL_SERVER_LIVE") or os.getenv("TL_SERVER", "LIVVFX")
 WEBHOOK_SECRET = os.getenv("WEBHOOK_SECRET",    "")
-# Mirror/forward: if set, every accepted webhook signal is relayed to this
-# partner bot's /webhook so it trades the same alerts (sized to its own account).
+# Mirror/forward: if set, every accepted webhook signal is relayed to these
+# partner bots' /webhook so each trades the same alerts (sized to its own
+# account). FORWARD_TO_URL/FORWARD_TO_SECRET is partner #1 for backward
+# compatibility; add more accounts with FORWARD_TO_URL_2/FORWARD_TO_SECRET_2,
+# FORWARD_TO_URL_3/FORWARD_TO_SECRET_3, etc. — each is a separate deployment
+# of this same bot pointed at a different TradeLocker account.
 FORWARD_TO_URL    = os.getenv("FORWARD_TO_URL",    "")
 FORWARD_TO_SECRET = os.getenv("FORWARD_TO_SECRET", "")
+
+
+def _load_forward_targets():
+    targets = []
+    if FORWARD_TO_URL:
+        targets.append((
+            os.getenv("FORWARD_TO_LABEL", "partner"),
+            FORWARD_TO_URL,
+            FORWARD_TO_SECRET,
+        ))
+    n = 2
+    while True:
+        url = os.getenv(f"FORWARD_TO_URL_{n}", "")
+        if not url:
+            break
+        targets.append((
+            os.getenv(f"FORWARD_TO_LABEL_{n}", f"partner{n}"),
+            url,
+            os.getenv(f"FORWARD_TO_SECRET_{n}", ""),
+        ))
+        n += 1
+    return targets
+
+
+FORWARD_TARGETS = _load_forward_targets()
+if FORWARD_TARGETS:
+    logger.info(
+        f"[Mirror] {len(FORWARD_TARGETS)} partner account(s) configured: "
+        + ", ".join(label for label, _url, _secret in FORWARD_TARGETS)
+    )
 RISK_PCT       = float(os.getenv("RISK_PCT",    "0.02"))
 DEFAULT_SL_PCT = float(os.getenv("DEFAULT_SL_PCT", "0.01"))
 # When an alert has no take-profit, set TP at this multiple of the SL distance
@@ -89,29 +123,32 @@ WEBHOOK_STATUS = {
 
 
 def _forward_signal(action, ticker, entry, sl, tp1, dry_run):
-    """Relay an accepted signal to a partner bot (mirror). Best-effort."""
-    if not FORWARD_TO_URL:
+    """Relay an accepted signal to every partner bot (mirror). Best-effort —
+    each target is independent, so one down/slow partner never blocks the
+    others or this bot's own trade."""
+    if not FORWARD_TARGETS:
         return
-    try:
-        import requests as _rq
-        payload = {
-            "secret": FORWARD_TO_SECRET,
-            "action": action,
-            "ticker": ticker,
-            "price":  entry,
-        }
-        if sl and sl > 0:
-            payload["sl"] = sl
-        if tp1 and tp1 > 0:
-            payload["tp"] = tp1
-        if dry_run:
-            payload["dry_run"] = True
-        # Short timeout so a slow/down partner never blocks our own trade.
-        r = _rq.post(FORWARD_TO_URL, json=payload, timeout=8)
-        logger.info(f"[Mirror] Forwarded {action.upper()} {ticker} -> {FORWARD_TO_URL} "
-                    f"(status {r.status_code})")
-    except Exception as e:
-        logger.warning(f"[Mirror] Forward failed (own trade unaffected): {e}")
+    import requests as _rq
+    for label, url, secret in FORWARD_TARGETS:
+        try:
+            payload = {
+                "secret": secret,
+                "action": action,
+                "ticker": ticker,
+                "price":  entry,
+            }
+            if sl and sl > 0:
+                payload["sl"] = sl
+            if tp1 and tp1 > 0:
+                payload["tp"] = tp1
+            if dry_run:
+                payload["dry_run"] = True
+            # Short timeout so a slow/down partner never blocks our own trade.
+            r = _rq.post(url, json=payload, timeout=8)
+            logger.info(f"[Mirror] Forwarded {action.upper()} {ticker} -> {label} ({url}) "
+                        f"(status {r.status_code})")
+        except Exception as e:
+            logger.warning(f"[Mirror] Forward to {label} ({url}) failed (own trade unaffected): {e}")
 
 
 def _record_webhook(summary: str, accepted: bool = False, count: bool = True):
