@@ -583,15 +583,20 @@ def fix_open_tps():
     return jsonify({"fixed": fixed, "skipped": skipped,
                     "open_positions": len(positions)}), 200
 
-@app.route("/instruments", methods=["GET"])
+@app.route("/instruments", methods=["GET", "POST"])
 def instruments():
     """
     List every tradable instrument name on this account, exactly as
     TradeLocker returns them — for diagnosing "Instrument not found" errors
-    without guessing symbol names. Secret-protected. Optional ?q=substring
+    without guessing symbol names. Secret-protected. Optional q=substring
     filters the list (case-insensitive).
+
+    Prefer POST with a JSON body ({"secret": "...", "q": "..."}) over the
+    query string — a secret with special characters (#, &, +) can get
+    mangled or truncated in a URL, especially when pasted into a browser.
     """
-    secret = request.args.get("secret")
+    body = request.get_json(silent=True) or {}
+    secret = body.get("secret") or request.args.get("secret")
     if WEBHOOK_SECRET and secret != WEBHOOK_SECRET:
         return jsonify({"error": "Unauthorized"}), 401
 
@@ -611,7 +616,7 @@ def instruments():
     except Exception as e:
         return jsonify({"error": "Broker connection failed", "detail": str(e)}), 502
 
-    q = (request.args.get("q") or "").upper()
+    q = (body.get("q") or request.args.get("q") or "").upper()
     if q:
         names = [n for n in names if q in n.upper()]
 
