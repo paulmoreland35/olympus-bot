@@ -31,18 +31,21 @@ _SYMBOL_MAPS = {
         "US500":   "SPX500",
     },
     "LIVVFX": {
-        "NAS100":  "NDXUSD",
-        "US100":   "NDXUSD",
-        "NASDAQ":  "NDXUSD",
-        "NDX100":  "NDXUSD",
-        "DJ30":    "DJIUSD",
-        "WS30":    "DJIUSD",
-        "DOW":     "DJIUSD",
-        "US30":    "DJIUSD",
-        "SPX":     "SPXUSD",
-        "SP500":   "SPXUSD",
-        "US500":   "SPXUSD",
-        "SPX500":  "SPXUSD",
+        # LIVVFX renamed its indices to plain names (matching Gold-style
+        # sizing) in their late-2026 update — NDXUSD/DJIUSD/SPXUSD are gone.
+        "NAS100":  "NAS100",
+        "US100":   "NAS100",
+        "NASDAQ":  "NAS100",
+        "NDX100":  "NAS100",
+        "NDXUSD":  "NAS100",
+        "DJ30":    "US30",
+        "WS30":    "US30",
+        "DOW":     "US30",
+        "DJIUSD":  "US30",
+        "SPX":     "SPX500",
+        "SP500":   "SPX500",
+        "US500":   "SPX500",
+        "SPXUSD":  "SPX500",
     },
 }
 
