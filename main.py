@@ -583,6 +583,40 @@ def fix_open_tps():
     return jsonify({"fixed": fixed, "skipped": skipped,
                     "open_positions": len(positions)}), 200
 
+@app.route("/instruments", methods=["GET"])
+def instruments():
+    """
+    List every tradable instrument name on this account, exactly as
+    TradeLocker returns them — for diagnosing "Instrument not found" errors
+    without guessing symbol names. Secret-protected. Optional ?q=substring
+    filters the list (case-insensitive).
+    """
+    secret = request.args.get("secret")
+    if WEBHOOK_SECRET and secret != WEBHOOK_SECRET:
+        return jsonify({"error": "Unauthorized"}), 401
+
+    try:
+        client = TradeLockerClient(
+            base_url=TL_BASE_URL, email=TL_EMAIL,
+            password=TL_PASSWORD, server=TL_SERVER,
+        )
+        client.authenticate()
+        url = f"{client.base_url}/trade/accounts/{client.account_id}/instruments"
+        resp = client.session.get(url, timeout=15)
+        resp.raise_for_status()
+        data = resp.json()
+        names = sorted(
+            str(inst.get("name", "")) for inst in data.get("d", {}).get("instruments", [])
+        )
+    except Exception as e:
+        return jsonify({"error": "Broker connection failed", "detail": str(e)}), 502
+
+    q = (request.args.get("q") or "").upper()
+    if q:
+        names = [n for n in names if q in n.upper()]
+
+    return jsonify({"count": len(names), "instruments": names}), 200
+
 @app.route("/reset-drawdown", methods=["POST", "GET"])
 def reset_drawdown():
     """
