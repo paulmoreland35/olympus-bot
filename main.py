@@ -915,6 +915,18 @@ def webhook():
         balance=balance, order_id=order_id,
     )
 
+    # 10b. Link this log entry to its broker position ID so the trailing
+    # loop can later match the close back to this trade (position_id
+    # starts as None otherwise, and log_exit() can never find it — every
+    # trade would sit "open" forever in bot_logged_trades).
+    try:
+        for p in client.get_open_positions():
+            if p.get("name", "").upper() == ticker.upper() and p.get("side") == action:
+                trade_log.match_position(trade_id, p["id"])
+                break
+    except Exception as e:
+        logger.warning(f"Could not link trade {trade_id} to a position ID: {e}")
+
     # 11. Success response
     tp_dropped = order.pop("_tp_dropped", False)
     response = {
