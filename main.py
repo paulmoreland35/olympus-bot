@@ -918,14 +918,24 @@ def webhook():
     # 10b. Link this log entry to its broker position ID so the trailing
     # loop can later match the close back to this trade (position_id
     # starts as None otherwise, and log_exit() can never find it — every
-    # trade would sit "open" forever in bot_logged_trades).
-    try:
-        for p in client.get_open_positions():
-            if p.get("name", "").upper() == ticker.upper() and p.get("side") == action:
-                trade_log.match_position(trade_id, p["id"])
-                break
-    except Exception as e:
-        logger.warning(f"Could not link trade {trade_id} to a position ID: {e}")
+    # trade would sit "open" forever in bot_logged_trades). The position
+    # may not be visible via the API for a moment right after the order
+    # fills, so retry briefly instead of checking only once.
+    matched = False
+    for attempt in range(4):
+        try:
+            for p in client.get_open_positions():
+                if p.get("name", "").upper() == ticker.upper() and p.get("side") == action:
+                    trade_log.match_position(trade_id, p["id"])
+                    matched = True
+                    break
+        except Exception as e:
+            logger.warning(f"[TradeLog] Position lookup failed (attempt {attempt + 1}): {e}")
+        if matched:
+            break
+        time.sleep(1.5)
+    if not matched:
+        logger.warning(f"Could not link trade {trade_id} to a position ID after retries.")
 
     # 11. Success response
     tp_dropped = order.pop("_tp_dropped", False)
