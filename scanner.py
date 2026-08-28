@@ -377,6 +377,11 @@ def run_scanner(client=None):
                     f"Score: {score}/8 | Entry: {entry} | SL: {sl:.4f} | TP: {tp:.4f}"
                 )
 
+                if os.getenv("TRADING_PAUSED", "false").strip().lower() == "true":
+                    logger.info(f"[Scanner] TRADING_PAUSED — signal found but no order placed for {broker_symbol}.")
+                    SCANNER_STATUS["last_signal"] = f"{action.upper()} {broker_symbol} @ {entry} (score {score}/8) — PAUSED, not placed"
+                    continue
+
                 # Refresh balance + size position
                 balance = client.get_balance()
                 if balance <= 0:

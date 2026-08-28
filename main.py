@@ -105,6 +105,14 @@ MAX_OPEN_TRADES        = int(os.getenv("MAX_OPEN_TRADES", "3"))
 # 10s is a good balance — responsive without hammering the API.
 TRAILING_POLL_SEC = int(os.getenv("TRAILING_POLL_SEC", "10"))
 
+# Master pause switch — set TRADING_PAUSED=true to stop new trades from
+# both the webhook and the autonomous scanner without touching TradingView
+# alerts or redeploying. Existing open positions still get managed by the
+# trailing loop (SL/TP still apply) — this only blocks new entries.
+TRADING_PAUSED = os.getenv("TRADING_PAUSED", "false").strip().lower() == "true"
+if TRADING_PAUSED:
+    logger.warning("[Pause] TRADING_PAUSED is set — no new trades will be placed.")
+
 # ------------------------------------------------------------------
 # Trailing stop manager + trade log (singletons)
 # ------------------------------------------------------------------
@@ -756,6 +764,13 @@ def webhook():
     # trades the same alerts, sized to its own account. Best-effort and
     # non-blocking — never let a mirror failure affect this bot's own trade.
     _forward_signal(action, ticker, entry, sl, tp1, dry_run)
+
+    # 4b. Paused — signal received and forwarded to any partners, but this
+    # account itself takes no new trade.
+    if TRADING_PAUSED:
+        logger.info(f"[Pause] Signal {action.upper()} {ticker} received but TRADING_PAUSED — no order placed.")
+        return jsonify({"status": "paused", "note": "Trading is paused on this account — no order placed.",
+                        "ticker": ticker, "action": action}), 200
 
     # 5. Connect to TradeLocker
     try:
