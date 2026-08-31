@@ -98,6 +98,13 @@ DEFAULT_SL_PCT = float(os.getenv("DEFAULT_SL_PCT", "0.01"))
 # When an alert has no take-profit, set TP at this multiple of the SL distance
 # (e.g. 1.5 = risk:reward of 1.5:1). Tunable via env without a code change.
 DEFAULT_TP_RR  = float(os.getenv("DEFAULT_TP_RR", "1.5"))
+# Fixed-point SL/TP overrides for signals with no SL/TP of their own (e.g.
+# Phoenix's "SELL Signal on TICKER at PRICE" has no ENTRY:/SL:/TP: fields).
+# 0 = disabled (use DEFAULT_SL_PCT / DEFAULT_TP_RR instead). Only makes
+# sense for point-based instruments (indices) — leave at 0 on deployments
+# also trading forex/metals where "points" isn't a consistent unit.
+DEFAULT_SL_POINTS = float(os.getenv("DEFAULT_SL_POINTS", "0"))
+DEFAULT_TP_POINTS = float(os.getenv("DEFAULT_TP_POINTS", "0"))
 
 # Daily drawdown limit — bot stops taking new trades for the rest of the day
 # once account balance drops this % below the day's opening balance.
@@ -954,18 +961,29 @@ def webhook():
 
     # 7. Fallback SL if missing
     if not sl or sl <= 0:
-        sl = calculate_default_sl(entry, action, DEFAULT_SL_PCT)
-        logger.info(f"Using default SL: {sl}")
+        if DEFAULT_SL_POINTS > 0:
+            sl = (entry - DEFAULT_SL_POINTS) if action == "buy" else (entry + DEFAULT_SL_POINTS)
+            sl = round(sl, 5)
+            logger.info(f"Using fixed default SL ({DEFAULT_SL_POINTS} points): {sl}")
+        else:
+            sl = calculate_default_sl(entry, action, DEFAULT_SL_PCT)
+            logger.info(f"Using default SL: {sl}")
 
     # 7a. Fallback TP if missing — signals like "Buy Signal/Sell Signal" send no
-    #     take-profit, so derive one from the SL distance at DEFAULT_TP_RR.
+    #     take-profit, so derive one from a fixed point distance (if set) or
+    #     the SL distance at DEFAULT_TP_RR.
     if (not tp1 or tp1 <= 0) and sl and sl > 0:
-        sl_dist = abs(entry - sl)
-        if sl_dist > 0:
-            tp1 = (entry + sl_dist * DEFAULT_TP_RR) if action == "buy" \
-                  else (entry - sl_dist * DEFAULT_TP_RR)
+        if DEFAULT_TP_POINTS > 0:
+            tp1 = (entry + DEFAULT_TP_POINTS) if action == "buy" else (entry - DEFAULT_TP_POINTS)
             tp1 = round(tp1, 5)
-            logger.info(f"Using default TP (R:R {DEFAULT_TP_RR}): {tp1}")
+            logger.info(f"Using fixed default TP ({DEFAULT_TP_POINTS} points): {tp1}")
+        else:
+            sl_dist = abs(entry - sl)
+            if sl_dist > 0:
+                tp1 = (entry + sl_dist * DEFAULT_TP_RR) if action == "buy" \
+                      else (entry - sl_dist * DEFAULT_TP_RR)
+                tp1 = round(tp1, 5)
+                logger.info(f"Using default TP (R:R {DEFAULT_TP_RR}): {tp1}")
 
     # 7b. Minimum R:R filter — TP must be at least 1.0x the SL distance
     #     Olympus signals are 1:1 by design, so we allow anything >= 1.0.
