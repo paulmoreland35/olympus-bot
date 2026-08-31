@@ -59,10 +59,13 @@ _METAL_ALIASES = {
 }
 
 def _get_symbol_map() -> dict:
-    # Honor TL_SERVER_LIVE too — some deployments (live LIVVFX accounts) set
-    # only TL_SERVER_LIVE, and the symbol map must match the auth server or
-    # index alerts (NAS100->NDXUSD, US30->DJIUSD) would fail at order time.
-    server = (os.getenv("TL_SERVER_LIVE") or os.getenv("TL_SERVER", "HEROFX")).upper()
+    # Symbol map is keyed off TL_SERVER only. Deployments that need index
+    # remapping (e.g. Derrick's LIVVFX #721022 -> NDXUSD/DJIUSD) set
+    # TL_SERVER=LIVVFX explicitly. Accounts whose broker uses NAS100/US30
+    # directly (e.g. paul-livvfx #746347) leave TL_SERVER unset, so this
+    # falls back to the pass-through HEROFX map. Do NOT read TL_SERVER_LIVE
+    # here — that would force the LIVVFX map onto accounts that don't want it.
+    server = os.getenv("TL_SERVER", "HEROFX").upper()
     return _SYMBOL_MAPS.get(server, _SYMBOL_MAPS["HEROFX"])
 
 def remap_symbol(ticker: str) -> str:
