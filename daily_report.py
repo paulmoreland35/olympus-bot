@@ -35,6 +35,7 @@ logger = logging.getLogger(__name__)
 
 _DEFAULT_SOURCES = (
     "Paul=https://spectacular-contentment-production-0410.up.railway.app/report,"
+    "Paul-LIVVFX=https://paul-livvfx-production.up.railway.app/report,"
     "Derrick=https://web-production-b75628.up.railway.app/report,"
     "Jeff=https://web-production-jeff.up.railway.app/report"
 )
