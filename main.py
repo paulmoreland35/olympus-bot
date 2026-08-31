@@ -98,11 +98,11 @@ DEFAULT_SL_PCT = float(os.getenv("DEFAULT_SL_PCT", "0.01"))
 # When an alert has no take-profit, set TP at this multiple of the SL distance
 # (e.g. 1.5 = risk:reward of 1.5:1). Tunable via env without a code change.
 DEFAULT_TP_RR  = float(os.getenv("DEFAULT_TP_RR", "1.5"))
-# Fixed-point SL/TP overrides for signals with no SL/TP of their own (e.g.
-# Phoenix's "SELL Signal on TICKER at PRICE" has no ENTRY:/SL:/TP: fields).
-# 0 = disabled (use DEFAULT_SL_PCT / DEFAULT_TP_RR instead). Only makes
-# sense for point-based instruments (indices) — leave at 0 on deployments
-# also trading forex/metals where "points" isn't a consistent unit.
+# Fixed-point SL/TP overrides, applied ONLY to Phoenix signals (its "SELL
+# Signal on TICKER at PRICE" alerts have no ENTRY:/SL:/TP: fields — every
+# other indicator missing SL/TP still uses DEFAULT_SL_PCT / DEFAULT_TP_RR
+# below). 0 = disabled. Only makes sense for point-based instruments
+# (indices) — leave at 0 on deployments also trading forex/metals.
 DEFAULT_SL_POINTS = float(os.getenv("DEFAULT_SL_POINTS", "0"))
 DEFAULT_TP_POINTS = float(os.getenv("DEFAULT_TP_POINTS", "0"))
 
@@ -959,24 +959,36 @@ def webhook():
         logger.warning(f"[Risk] {msg}")
         return jsonify({"status": "blocked", "reason": msg}), 403
 
+    # Fixed-point SL/TP is scoped to Phoenix signals only — every other
+    # indicator missing its own SL/TP (Elite Smart Money Scanner, Lazy
+    # Signals, Day Trader, Scalper, etc.) keeps using the percentage/ratio
+    # fallback below. Detected either from Phoenix's own alert text (always
+    # contains "Phoenix" when using the {"raw":"{{alert.message}}"} wrapper)
+    # or an explicit "source":"phoenix" field (needed for the manual JSON
+    # fields format, e.g. {"action":"buy","ticker":...}, which carries no
+    # indicator name at all).
+    is_phoenix = "phoenix" in raw_body.lower() or (
+        isinstance(data, dict) and str(data.get("source", "")).strip().lower() == "phoenix"
+    )
+
     # 7. Fallback SL if missing
     if not sl or sl <= 0:
-        if DEFAULT_SL_POINTS > 0:
+        if DEFAULT_SL_POINTS > 0 and is_phoenix:
             sl = (entry - DEFAULT_SL_POINTS) if action == "buy" else (entry + DEFAULT_SL_POINTS)
             sl = round(sl, 5)
-            logger.info(f"Using fixed default SL ({DEFAULT_SL_POINTS} points): {sl}")
+            logger.info(f"Using fixed Phoenix SL ({DEFAULT_SL_POINTS} points): {sl}")
         else:
             sl = calculate_default_sl(entry, action, DEFAULT_SL_PCT)
             logger.info(f"Using default SL: {sl}")
 
     # 7a. Fallback TP if missing — signals like "Buy Signal/Sell Signal" send no
-    #     take-profit, so derive one from a fixed point distance (if set) or
-    #     the SL distance at DEFAULT_TP_RR.
+    #     take-profit, so derive one from a fixed point distance (Phoenix
+    #     only, if set) or the SL distance at DEFAULT_TP_RR.
     if (not tp1 or tp1 <= 0) and sl and sl > 0:
-        if DEFAULT_TP_POINTS > 0:
+        if DEFAULT_TP_POINTS > 0 and is_phoenix:
             tp1 = (entry + DEFAULT_TP_POINTS) if action == "buy" else (entry - DEFAULT_TP_POINTS)
             tp1 = round(tp1, 5)
-            logger.info(f"Using fixed default TP ({DEFAULT_TP_POINTS} points): {tp1}")
+            logger.info(f"Using fixed Phoenix TP ({DEFAULT_TP_POINTS} points): {tp1}")
         else:
             sl_dist = abs(entry - sl)
             if sl_dist > 0:
