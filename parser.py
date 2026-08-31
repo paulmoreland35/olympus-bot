@@ -59,7 +59,10 @@ _METAL_ALIASES = {
 }
 
 def _get_symbol_map() -> dict:
-    server = os.getenv("TL_SERVER", "HEROFX").upper()
+    # Honor TL_SERVER_LIVE too — some deployments (live LIVVFX accounts) set
+    # only TL_SERVER_LIVE, and the symbol map must match the auth server or
+    # index alerts (NAS100->NDXUSD, US30->DJIUSD) would fail at order time.
+    server = (os.getenv("TL_SERVER_LIVE") or os.getenv("TL_SERVER", "HEROFX")).upper()
     return _SYMBOL_MAPS.get(server, _SYMBOL_MAPS["HEROFX"])
 
 def remap_symbol(ticker: str) -> str:
