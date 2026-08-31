@@ -15,6 +15,11 @@ Env vars (set on the reporter bot's Railway):
   REPORT_SOURCES   -  comma list of "Label=url" report endpoints. Default:
                       both known bot /report URLs.
   REPORT_HOUR_ET   -  hour of day (ET, 24h) to send. Default 17.
+  ANTHROPIC_API_KEY - optional. When set, adds a "Coach's Notes" section
+                      written by Claude analyzing the day's actual trades
+                      and stats (win rate, streaks, drawdown risk) with
+                      specific, non-generic advice. Skipped entirely (no
+                      error) if not set.
 """
 
 import os
@@ -210,16 +215,90 @@ def _account_section(label: str, d: dict) -> str:
     return html
 
 
+def _generate_coaching(accounts_data: list[tuple[str, dict]]) -> str:
+    """
+    Ask Claude to write a short coaching note on today's trading activity
+    across all accounts. Returns an HTML section, or "" if ANTHROPIC_API_KEY
+    isn't set or the call fails — the report still sends fine either way.
+    """
+    api_key = os.getenv("ANTHROPIC_API_KEY", "")
+    if not api_key:
+        return ""
+
+    lines = []
+    for label, d in accounts_data:
+        if d.get("fetch_error") or d.get("broker_error"):
+            continue
+        stats = d.get("stats", {})
+        lines.append(
+            f"{label}: balance ${d.get('balance', 0):,.2f}, today's P&L "
+            f"{d.get('day_pnl_pct', 0):+.2f}%, {stats.get('total_closed', 0)} trades closed "
+            f"({stats.get('wins', 0)}W/{stats.get('losses', 0)}L, "
+            f"{stats.get('win_rate_pct', 0)}% win rate), "
+            f"{len(d.get('open_positions', []))} open now, "
+            f"drawdown halted: {d.get('drawdown_halted', False)}."
+        )
+        for c in d.get("closed_trades", [])[:10]:
+            lines.append(
+                f"  - {label}: {c.get('side')} {c.get('ticker')} @ {c.get('entry')} "
+                f"-> {c.get('exit')} ({c.get('outcome')}, {c.get('reason')})"
+            )
+
+    if not lines:
+        return ""
+
+    prompt = (
+        "You are an experienced trading coach reviewing one day of automated "
+        "trading activity across one or more accounts. Here is today's data:\n\n"
+        + "\n".join(lines) +
+        "\n\nWrite a short, direct coaching note (150-250 words) in plain "
+        "paragraphs (no markdown headers or bullet lists). Call out real "
+        "patterns in this specific data — win rate, losing streaks, "
+        "position sizing, drawdown risk, any one-directional trades getting "
+        "stopped out repeatedly. Say what's working and give one or two "
+        "concrete, specific things to adjust. Use the actual numbers, don't "
+        "be generic."
+    )
+
+    try:
+        r = requests.post(
+            "https://api.anthropic.com/v1/messages",
+            headers={
+                "x-api-key": api_key,
+                "anthropic-version": "2023-06-01",
+                "Content-Type": "application/json",
+            },
+            json={
+                "model": "claude-sonnet-5",
+                "max_tokens": 600,
+                "messages": [{"role": "user", "content": prompt}],
+            },
+            timeout=30,
+        )
+        r.raise_for_status()
+        text = r.json()["content"][0]["text"]
+        paragraphs = "".join(f"<p>{p.strip()}</p>" for p in text.split("\n") if p.strip())
+        return (
+            "<h2>🎯 Coach's Notes</h2>"
+            "<div style='font-size:14px;line-height:1.6;background:#f7f7fb;"
+            "padding:12px 16px;border-radius:6px'>" + paragraphs + "</div>"
+        )
+    except Exception as e:
+        logger.warning(f"[Coach] Failed to generate coaching commentary: {e}")
+        return ""
+
+
 def build_report_html() -> tuple[str, str]:
     """Returns (subject, html_body)."""
     sources = _parse_sources()
-    sections, all_notes = [], []
+    sections, all_notes, accounts_data = [], [], []
     total_bal = 0.0
 
     for label, url in sources:
         d = _fetch(url)
         sections.append(_account_section(label, d))
         all_notes.extend(_insights(label, d))
+        accounts_data.append((label, d))
         try:
             total_bal += float(d.get("balance", 0))
         except Exception:
@@ -232,6 +311,8 @@ def build_report_html() -> tuple[str, str]:
         notes_html = ("<h2>Insights &amp; growth</h2><ul style='font-size:14px;line-height:1.6'>"
                       + "".join(f"<li>{n}</li>" for n in all_notes) + "</ul>")
 
+    coaching_html = _generate_coaching(accounts_data)
+
     body = (
         f"<div style='font-family:Arial,Helvetica,sans-serif;max-width:680px;margin:auto'>"
         f"<h1 style='color:#1a1a2e'>Olympus Bot &mdash; Daily Report</h1>"
@@ -241,6 +322,7 @@ def build_report_html() -> tuple[str, str]:
         + "<hr>".join(sections)
         + "<hr>"
         + notes_html
+        + coaching_html
         + "<p style='color:#999;font-size:12px;margin-top:24px'>"
           "Automated report from your Olympus trading bot. P&amp;L and positions "
           "are pulled live from TradeLocker.</p></div>"
