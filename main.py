@@ -98,13 +98,44 @@ DEFAULT_SL_PCT = float(os.getenv("DEFAULT_SL_PCT", "0.01"))
 # When an alert has no take-profit, set TP at this multiple of the SL distance
 # (e.g. 1.5 = risk:reward of 1.5:1). Tunable via env without a code change.
 DEFAULT_TP_RR  = float(os.getenv("DEFAULT_TP_RR", "1.5"))
-# Fixed-point SL/TP overrides, applied ONLY to Phoenix signals (its "SELL
-# Signal on TICKER at PRICE" alerts have no ENTRY:/SL:/TP: fields — every
-# other indicator missing SL/TP still uses DEFAULT_SL_PCT / DEFAULT_TP_RR
-# below). 0 = disabled. Only makes sense for point-based instruments
-# (indices) — leave at 0 on deployments also trading forex/metals.
-DEFAULT_SL_POINTS = float(os.getenv("DEFAULT_SL_POINTS", "0"))
-DEFAULT_TP_POINTS = float(os.getenv("DEFAULT_TP_POINTS", "0"))
+# Per-indicator fixed-point SL/TP overrides, for indicators whose alerts
+# carry no SL/TP of their own. Configure via SL_POINTS_<NAME>/TP_POINTS_<NAME>
+# env vars (e.g. SL_POINTS_ELITE=60, TP_POINTS_ELITE=30) — <NAME> is matched
+# case-insensitively against the raw alert text, or an explicit "source"
+# field in the JSON payload. Only applies to the matching indicator; every
+# other signal missing SL/TP still uses DEFAULT_SL_PCT/DEFAULT_TP_RR below.
+# Only makes sense for point-based instruments (indices) — don't configure
+# on deployments also trading forex/metals.
+# DEFAULT_SL_POINTS/DEFAULT_TP_POINTS are kept as the legacy name for
+# "PHOENIX" specifically, so already-configured deployments keep working.
+_LEGACY_POINTS_ALIASES = {"PHOENIX": ("DEFAULT_SL_POINTS", "DEFAULT_TP_POINTS")}
+
+
+def _lookup_named_points_override(raw_body: str, data):
+    """
+    Find a per-indicator fixed SL/TP point override for this signal. Matched
+    by an explicit "source" field in the JSON payload, or by a configured
+    <NAME> appearing case-insensitively in the raw alert text. Returns
+    (sl_points, tp_points, name) or None if nothing is configured/matches.
+    """
+    explicit_source = str(data.get("source", "")).strip().upper() if isinstance(data, dict) else ""
+    raw_lower = raw_body.lower()
+
+    names = {key[len("SL_POINTS_"):] for key in os.environ if key.startswith("SL_POINTS_")}
+    names.update(_LEGACY_POINTS_ALIASES.keys())
+
+    for name in names:
+        sl_key, tp_key = _LEGACY_POINTS_ALIASES.get(name, (f"SL_POINTS_{name}", f"TP_POINTS_{name}"))
+        try:
+            sl_pts = float(os.getenv(sl_key, "0"))
+            tp_pts = float(os.getenv(tp_key, "0"))
+        except ValueError:
+            continue
+        if sl_pts <= 0 or tp_pts <= 0:
+            continue
+        if explicit_source == name or name.lower() in raw_lower:
+            return sl_pts, tp_pts, name
+    return None
 
 # Daily drawdown limit — bot stops taking new trades for the rest of the day
 # once account balance drops this % below the day's opening balance.
@@ -959,36 +990,32 @@ def webhook():
         logger.warning(f"[Risk] {msg}")
         return jsonify({"status": "blocked", "reason": msg}), 403
 
-    # Fixed-point SL/TP is scoped to Phoenix signals only — every other
-    # indicator missing its own SL/TP (Elite Smart Money Scanner, Lazy
-    # Signals, Day Trader, Scalper, etc.) keeps using the percentage/ratio
-    # fallback below. Detected either from Phoenix's own alert text (always
-    # contains "Phoenix" when using the {"raw":"{{alert.message}}"} wrapper)
-    # or an explicit "source":"phoenix" field (needed for the manual JSON
-    # fields format, e.g. {"action":"buy","ticker":...}, which carries no
-    # indicator name at all).
-    is_phoenix = "phoenix" in raw_body.lower() or (
-        isinstance(data, dict) and str(data.get("source", "")).strip().lower() == "phoenix"
-    )
+    # Per-indicator fixed-point SL/TP — scoped to whichever indicator this
+    # signal is actually from (via raw text match or explicit "source"
+    # field), so e.g. Phoenix and Elite Smart Money Scanner can each have
+    # their own fixed sizing without affecting each other or anything else.
+    points_override = _lookup_named_points_override(raw_body, data)
 
     # 7. Fallback SL if missing
     if not sl or sl <= 0:
-        if DEFAULT_SL_POINTS > 0 and is_phoenix:
-            sl = (entry - DEFAULT_SL_POINTS) if action == "buy" else (entry + DEFAULT_SL_POINTS)
+        if points_override:
+            sl_pts, _tp_pts, src_name = points_override
+            sl = (entry - sl_pts) if action == "buy" else (entry + sl_pts)
             sl = round(sl, 5)
-            logger.info(f"Using fixed Phoenix SL ({DEFAULT_SL_POINTS} points): {sl}")
+            logger.info(f"Using fixed {src_name} SL ({sl_pts} points): {sl}")
         else:
             sl = calculate_default_sl(entry, action, DEFAULT_SL_PCT)
             logger.info(f"Using default SL: {sl}")
 
     # 7a. Fallback TP if missing — signals like "Buy Signal/Sell Signal" send no
-    #     take-profit, so derive one from a fixed point distance (Phoenix
-    #     only, if set) or the SL distance at DEFAULT_TP_RR.
+    #     take-profit, so derive one from a fixed point distance (per-indicator
+    #     override, if configured) or the SL distance at DEFAULT_TP_RR.
     if (not tp1 or tp1 <= 0) and sl and sl > 0:
-        if DEFAULT_TP_POINTS > 0 and is_phoenix:
-            tp1 = (entry + DEFAULT_TP_POINTS) if action == "buy" else (entry - DEFAULT_TP_POINTS)
+        if points_override:
+            _sl_pts, tp_pts, src_name = points_override
+            tp1 = (entry + tp_pts) if action == "buy" else (entry - tp_pts)
             tp1 = round(tp1, 5)
-            logger.info(f"Using fixed Phoenix TP ({DEFAULT_TP_POINTS} points): {tp1}")
+            logger.info(f"Using fixed {src_name} TP ({tp_pts} points): {tp1}")
         else:
             sl_dist = abs(entry - sl)
             if sl_dist > 0:
