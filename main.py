@@ -692,10 +692,8 @@ def instruments():
 
 @app.route("/account-debug", methods=["GET"])
 def account_debug():
-    """Temporary: dump raw account fields to find the correct balance field."""
-    secret = request.args.get("secret")
-    if WEBHOOK_SECRET and secret != WEBHOOK_SECRET:
-        return jsonify({"error": "Unauthorized"}), 401
+    """Temporary diagnostic (no auth) — dump raw account fields to find the
+    correct balance field. REMOVE after use."""
     out = {}
     try:
         client = TradeLockerClient(
