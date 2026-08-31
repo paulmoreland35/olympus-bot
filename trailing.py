@@ -1,14 +1,22 @@
 """
 Trailing Stop Manager
 ---------------------
-Polls every open TradeLocker position (bot-placed OR manual) and:
+Polls every open TradeLocker position (bot-placed OR manual) and moves its
+SL through two staged lock-in points on the way to TP1:
 
-  1. Once price reaches the HALFWAY point between entry and TP1:
-       → Move SL to breakeven (entry price)
+  1. Once price reaches BREAKEVEN_TP_RATIO of the way to TP (default 30%):
+       → Move SL to breakeven (entry price), then trail it behind price
+         at the original SL distance.
 
-  2. After breakeven is active, trail the SL behind current price
-     at the same distance the original SL was from entry.
-     (Only moves SL in the profitable direction — never backwards.)
+  2. Once price reaches LOCK_IN_TP_RATIO of the way to TP (default 50%):
+       → Move SL up to the price level stage 1 triggered at (locking in
+         that much profit), then continue trailing behind price at the
+         same distance until TP1 is hit.
+
+Trailing only ever moves SL in the profitable direction — never backwards.
+Without a TP on the position (e.g. broker dropped it), falls back to a
+single-stage 1× SL-distance breakeven trigger, since there's no TP to
+measure percentages against.
 
 Current price is derived from unrealised P&L when not supplied directly
 by the broker:
@@ -26,9 +34,14 @@ from risk import _contract_size   # reuse existing contract size table
 logger = logging.getLogger(__name__)
 
 # Fraction of the entry-to-TP distance price must reach before SL moves to
-# breakeven. 0.5 = halfway to TP. Tunable per-deployment via env without a
-# code change.
-BREAKEVEN_TP_RATIO = float(os.getenv("BREAKEVEN_TP_RATIO", "0.5"))
+# breakeven (stage 1). 0.3 = 30% of the way to TP. Tunable per-deployment
+# via env without a code change.
+BREAKEVEN_TP_RATIO = float(os.getenv("BREAKEVEN_TP_RATIO", "0.3"))
+
+# Fraction of the entry-to-TP distance price must reach before SL locks in
+# to the stage-1 (breakeven-trigger) price level (stage 2). Must be greater
+# than BREAKEVEN_TP_RATIO. 0.5 = 50% of the way to TP.
+LOCK_IN_TP_RATIO = float(os.getenv("LOCK_IN_TP_RATIO", "0.5"))
 
 
 class TrailingStopManager:
@@ -103,14 +116,15 @@ class TrailingStopManager:
             positions = []
             for pid, s in self._state.items():
                 positions.append({
-                    "id":              pid,
-                    "ticker":          s.get("ticker", "?"),
-                    "side":            s.get("side", "?"),
-                    "entry":           s.get("entry", 0),
-                    "activation_dist": round(s.get("activation_dist", 0), 5),
-                    "trail_dist":      round(s.get("trail_dist", 0), 5),
-                    "activated":       s.get("activated", False),
-                    "current_sl":  s.get("last_sl", 0),
+                    "id":            pid,
+                    "ticker":        s.get("ticker", "?"),
+                    "side":          s.get("side", "?"),
+                    "entry":         s.get("entry", 0),
+                    "level_a_price": round(s.get("level_a_price", 0) or 0, 5),
+                    "level_b_price": round(s["level_b_price"], 5) if s.get("level_b_price") else None,
+                    "trail_dist":    round(s.get("trail_dist", 0), 5),
+                    "stage":         s.get("stage", 0),
+                    "current_sl":    s.get("last_sl", 0),
                 })
             return {"tracked": len(positions), "positions": positions}
 
@@ -155,12 +169,16 @@ class TrailingStopManager:
 
     def _evaluate(self, pos: dict) -> Optional[float]:
         """
-        Core logic for one position.
-        Returns new SL price if an update is needed, else None.
+        Core logic for one position. Returns new SL price if an update is
+        needed, else None.
 
-        Activation: price must reach BREAKEVEN_TP_RATIO of the way from
-        entry to TP (default 50%). Falls back to a 1× SL-distance trigger
-        when the position has no TP (e.g. broker dropped it on order entry).
+        Two staged lock-in points on the way to TP1:
+          Stage 0 -> 1 at BREAKEVEN_TP_RATIO (default 30%): SL -> breakeven.
+          Stage 1 -> 2 at LOCK_IN_TP_RATIO   (default 50%): SL -> the price
+              level stage 1 triggered at.
+        Stages 1 and 2 both trail behind price at the original SL distance
+        in between triggers. Falls back to a single-stage 1x SL-distance
+        breakeven trigger when the position has no TP.
         """
         pos_id      = pos["id"]
         side        = pos.get("side", "").lower()
@@ -181,90 +199,134 @@ class TrailingStopManager:
             logger.debug(f"[Trailing] {ticker}: could not determine current price — skipping")
             return None
 
-        sl_dist = abs(entry - current_sl)
-        if sl_dist == 0:
-            return None
+        def price_at(dist):
+            return entry + dist if side == "buy" else entry - dist
 
-        # Activation trigger: BREAKEVEN_TP_RATIO of the way from entry to TP.
-        # Trailing distance (once active) always stays the original SL distance
-        # regardless of where activation happens.
-        if tp and tp > 0:
-            activation_dist = abs(tp - entry) * BREAKEVEN_TP_RATIO
-        else:
-            activation_dist = sl_dist
-        if side == "buy":
-            activation_price = entry + activation_dist
-        else:
-            activation_price = entry - activation_dist
+        def reached(target):
+            return (side == "buy" and current_price >= target) or \
+                   (side == "sell" and current_price <= target)
 
         with self._lock:
             state = self._state.get(pos_id)
 
             if state is None:
-                activated = False
+                # First time seeing this position. sl_dist is only measured
+                # here, from the ORIGINAL SL — it must never be recomputed
+                # from current_sl on later polls, since current_sl equals
+                # entry right after breakeven, which would make it 0 and
+                # break trailing permanently from that point on.
+                sl_dist = abs(entry - current_sl)
+                if sl_dist == 0:
+                    return None
 
-                # Already past activation on first poll — activate immediately
-                if (side == "buy"  and current_price >= activation_price) or \
-                   (side == "sell" and current_price <= activation_price):
-                    activated = True
+                has_tp = bool(tp and tp > 0)
+                if has_tp:
+                    tp_dist = abs(tp - entry)
+                    level_a_dist = tp_dist * BREAKEVEN_TP_RATIO
+                    level_b_dist = tp_dist * LOCK_IN_TP_RATIO
+                else:
+                    # No TP on the position — fall back to the simple 1:1
+                    # SL-distance single-stage trigger. There's no TP to
+                    # measure a % against, so there's no second stage either.
+                    level_a_dist = sl_dist
+                    level_b_dist = None
+
+                level_a_price = price_at(level_a_dist)
+                level_b_price = price_at(level_b_dist) if level_b_dist is not None else None
+
+                # Figure out which stage it should already be in, in case
+                # price gapped past one or both triggers before this poll.
+                if level_b_price is not None and reached(level_b_price):
+                    stage, new_sl = 2, level_a_price
                     logger.info(
-                        f"[Trailing] {ticker} ({pos_id}): past activation on first poll "
-                        f"— activating immediately. entry={entry} activation={activation_price:.5f} "
-                        f"price={current_price:.5f}"
+                        f"[Trailing] {ticker} ({pos_id}): already past "
+                        f"{LOCK_IN_TP_RATIO*100:.0f}%-to-TP on first poll — "
+                        f"locking SL at the {BREAKEVEN_TP_RATIO*100:.0f}% level "
+                        f"({new_sl:.5f})."
                     )
+                elif reached(level_a_price):
+                    stage, new_sl = 1, entry
+                    logger.info(
+                        f"[Trailing] {ticker} ({pos_id}): already past "
+                        f"{BREAKEVEN_TP_RATIO*100:.0f}%-to-TP on first poll — "
+                        f"moving SL to breakeven ({new_sl:.5f})."
+                    )
+                else:
+                    stage, new_sl = 0, None
 
                 self._state[pos_id] = {
-                    "ticker":          ticker,
-                    "side":            side,
-                    "entry":           entry,
-                    "activation_dist": activation_dist,
-                    "trail_dist":      sl_dist,
-                    "activated":       activated,
-                    "last_sl":         current_sl,
+                    "ticker":        ticker,
+                    "side":          side,
+                    "entry":         entry,
+                    "level_a_price": level_a_price,
+                    "level_b_price": level_b_price,
+                    "trail_dist":    sl_dist,
+                    "stage":         stage,
+                    "last_sl":       new_sl if new_sl is not None else current_sl,
                 }
-                state = self._state[pos_id]
-
-                if not activated:
+                if new_sl is None:
                     return None
+                new_sl = round(new_sl, 5)
+                self._state[pos_id]["last_sl"] = new_sl
+                return new_sl
 
-            # Recalculate activation_price using stored activation_dist (locked in at init)
-            activation_dist  = state["activation_dist"]
-            if side == "buy":
-                activation_price = state["entry"] + activation_dist
-            else:
-                activation_price = state["entry"] - activation_dist
+            stage         = state["stage"]
+            level_a_price = state["level_a_price"]
+            level_b_price = state["level_b_price"]
+            trail_dist    = state["trail_dist"]
 
-            # ----- Phase 1: waiting for breakeven trigger -----
-            if not state["activated"]:
-                reached = (side == "buy"  and current_price >= activation_price) or \
-                          (side == "sell" and current_price <= activation_price)
-
-                if not reached:
+            # ----- Stage 0: waiting for the breakeven trigger -----
+            if stage == 0:
+                if not reached(level_a_price):
                     return None
-
-                state["activated"] = True
-                logger.info(
-                    f"[Trailing] {ticker}: breakeven trigger reached! "
-                    f"entry={entry} activation={activation_price:.5f} price={current_price:.5f} "
-                    f"→ moving SL to breakeven ({entry}), trail_dist={state['trail_dist']:.5f}"
-                )
+                state["stage"] = 1
                 new_sl = entry
+                logger.info(
+                    f"[Trailing] {ticker}: {BREAKEVEN_TP_RATIO*100:.0f}%-to-TP reached! "
+                    f"Moving SL to breakeven ({entry:.5f})."
+                )
 
-            # ----- Phase 2: trailing after breakeven -----
+            # ----- Stage 1: breakeven active, trailing, watching for the lock-in trigger -----
+            elif stage == 1:
+                trail_candidate = current_price - trail_dist if side == "buy" \
+                                   else current_price + trail_dist
+
+                if level_b_price is not None and reached(level_b_price):
+                    state["stage"] = 2
+                    # Lock in at least the stage-1 level, but don't give back
+                    # ground the ordinary trail has already earned.
+                    new_sl = max(trail_candidate, level_a_price) if side == "buy" \
+                             else min(trail_candidate, level_a_price)
+                    logger.info(
+                        f"[Trailing] {ticker}: {LOCK_IN_TP_RATIO*100:.0f}%-to-TP reached! "
+                        f"Locking SL to {new_sl:.5f}."
+                    )
+                else:
+                    new_sl = trail_candidate
+                    if side == "buy" and new_sl <= current_sl:
+                        return None
+                    if side == "sell" and new_sl >= current_sl:
+                        return None
+
+            # ----- Stage 2: past the lock-in trigger, trailing until TP1 -----
             else:
-                trail_dist = state["trail_dist"]
                 if side == "buy":
                     new_sl = current_price - trail_dist
-                    # Only move SL upward (never backwards)
                     if new_sl <= current_sl:
                         return None
                 else:
                     new_sl = current_price + trail_dist
-                    # Only move SL downward (never backwards)
                     if new_sl >= current_sl:
                         return None
 
             new_sl = round(new_sl, 5)
+
+            # Never actually move backward regardless of stage transitions above
+            if side == "buy" and new_sl <= current_sl:
+                return None
+            if side == "sell" and new_sl >= current_sl:
+                return None
+
             state["last_sl"] = new_sl
 
             # Sanity check — SL must be on the correct side of current price
