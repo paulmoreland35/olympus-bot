@@ -226,6 +226,34 @@ def _record_bot_close(position_id: str, pnl: float):
                 f"bot day P&L now ${running:,.2f}.")
 
 
+def _link_trade_position(client, trade_id: str, ticker: str, action: str):
+    """
+    Background lookup that links a freshly-placed order to its broker
+    position ID (retrying briefly, since the position may not be visible
+    via the API for a moment right after the order fills) and tags it as
+    bot-owned for bot-only drawdown accounting. Always run off-thread from
+    the webhook response — TradingView times out webhook deliveries after
+    just a few seconds, so this must never block the response.
+    """
+    matched = False
+    for attempt in range(4):
+        try:
+            for p in client.get_open_positions():
+                if p.get("name", "").upper() == ticker.upper() and p.get("side") == action:
+                    trade_log.match_position(trade_id, p["id"])
+                    if BOT_ONLY_DRAWDOWN and str(p["id"]) not in _bot_positions:
+                        _register_bot_position(str(p["id"]), ticker)
+                    matched = True
+                    break
+        except Exception as e:
+            logger.warning(f"[TradeLog] Position lookup failed (attempt {attempt + 1}): {e}")
+        if matched:
+            break
+        time.sleep(1.5)
+    if not matched:
+        logger.warning(f"Could not link trade {trade_id} to a position ID after retries.")
+
+
 def _update_day_open(balance: float):
     """Record today's opening balance on the first call each day."""
     global _day_open_balance, _day_open_date
@@ -1041,23 +1069,14 @@ def webhook():
     # fills, so retry briefly instead of checking only once.
     # The same lookup also tags the position as bot-owned for bot-only
     # drawdown accounting (one-trade-per-symbol guarantees it's ours).
-    matched = False
-    for attempt in range(4):
-        try:
-            for p in client.get_open_positions():
-                if p.get("name", "").upper() == ticker.upper() and p.get("side") == action:
-                    trade_log.match_position(trade_id, p["id"])
-                    if BOT_ONLY_DRAWDOWN and str(p["id"]) not in _bot_positions:
-                        _register_bot_position(str(p["id"]), ticker)
-                    matched = True
-                    break
-        except Exception as e:
-            logger.warning(f"[TradeLog] Position lookup failed (attempt {attempt + 1}): {e}")
-        if matched:
-            break
-        time.sleep(1.5)
-    if not matched:
-        logger.warning(f"Could not link trade {trade_id} to a position ID after retries.")
+    # Runs in the background — TradingView times out webhook deliveries
+    # after just a few seconds, so this must never block the response.
+    threading.Thread(
+        target=_link_trade_position,
+        args=(client, trade_id, ticker, action),
+        daemon=True,
+        name="link-trade-position",
+    ).start()
 
     # 11. Success response
     tp_dropped = order.pop("_tp_dropped", False)
