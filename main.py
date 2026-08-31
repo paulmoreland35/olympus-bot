@@ -690,6 +690,39 @@ def instruments():
 
     return jsonify({"count": len(names), "instruments": names}), 200
 
+@app.route("/account-debug", methods=["GET"])
+def account_debug():
+    """Temporary: dump raw account fields to find the correct balance field."""
+    secret = request.args.get("secret")
+    if WEBHOOK_SECRET and secret != WEBHOOK_SECRET:
+        return jsonify({"error": "Unauthorized"}), 401
+    out = {}
+    try:
+        client = TradeLockerClient(
+            base_url=TL_BASE_URL, email=TL_EMAIL,
+            password=TL_PASSWORD, server=TL_SERVER,
+        )
+        client.authenticate()
+        resp = client.session.get(f"{client.base_url}/auth/jwt/all-accounts", timeout=10)
+        data = resp.json()
+        accounts = data if isinstance(data, list) else data.get("accounts", [])
+        out["raw_accounts"]       = accounts
+        out["loaded_account_id"]  = client.account_id
+        out["loaded_acc_num"]     = client.acc_num
+        out["loaded_balance"]     = client.balance
+        out["tl_acc_num_env"]     = os.getenv("TL_ACC_NUM", "")
+        # also try the per-account state endpoint (richer balance fields)
+        try:
+            st = client.session.get(
+                f"{client.base_url}/trade/accounts/{client.account_id}/state", timeout=10)
+            out["state_status"] = st.status_code
+            out["state_raw"]    = st.json().get("d", st.json())
+        except Exception as e:
+            out["state_error"] = str(e)
+    except Exception as e:
+        out["error"] = str(e)
+    return jsonify(out), 200
+
 @app.route("/reset-drawdown", methods=["POST", "GET"])
 def reset_drawdown():
     """
