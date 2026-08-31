@@ -188,6 +188,39 @@ _drawdown_lock       = threading.Lock()
 _day_open_balance    = 0.0   # balance recorded at first trade of the day
 _day_open_date       = None  # the calendar date that balance belongs to
 
+# Bot-only drawdown accounting. When BOT_ONLY_DRAWDOWN is on, the daily loss
+# limit is measured against the BOT'S OWN realized P&L only — the user's manual
+# trades on the same account never count, so they can't halt the bot.
+BOT_ONLY_DRAWDOWN = os.getenv("BOT_ONLY_DRAWDOWN", "true").lower() == "true"
+_bot_positions    = {}       # position_id(str) -> ticker, positions the bot opened
+_bot_day_pnl      = 0.0      # sum of realized P&L of bot positions closed today
+_bot_pnl_date     = None     # calendar date _bot_day_pnl belongs to
+
+
+def _register_bot_position(position_id: str, ticker: str):
+    """Mark a position as bot-owned so its close counts toward bot-only P&L."""
+    with _drawdown_lock:
+        _bot_positions[str(position_id)] = ticker
+    logger.info(f"[BotDD] Tracking bot position {position_id} ({ticker}).")
+
+
+def _record_bot_close(position_id: str, pnl: float):
+    """Add a closed bot position's realized P&L to today's bot P&L tally."""
+    global _bot_day_pnl, _bot_pnl_date
+    pid = str(position_id)
+    with _drawdown_lock:
+        if pid not in _bot_positions:
+            return  # not a bot position (manual trade) — ignore
+        today = _date.today()
+        if _bot_pnl_date != today:
+            _bot_day_pnl  = 0.0
+            _bot_pnl_date = today
+        _bot_day_pnl += float(pnl or 0)
+        _bot_positions.pop(pid, None)
+        running = _bot_day_pnl
+    logger.info(f"[BotDD] Bot position {pid} closed P&L ${pnl:,.2f} — "
+                f"bot day P&L now ${running:,.2f}.")
+
 
 def _update_day_open(balance: float):
     """Record today's opening balance on the first call each day."""
@@ -207,16 +240,32 @@ def _is_halted(current_balance: float) -> tuple[bool, str]:
     """
     Returns (halted, reason_string).
     Halted = True when today's loss has hit MAX_DAILY_DRAWDOWN_PCT.
+
+    BOT_ONLY_DRAWDOWN on  -> measured against the bot's own realized P&L only
+                             (manual trades excluded, so they never halt it).
+    BOT_ONLY_DRAWDOWN off -> measured against whole-account balance (legacy).
     """
     with _drawdown_lock:
         open_bal = _day_open_balance
+        bot_pnl  = _bot_day_pnl if _bot_pnl_date == _date.today() else 0.0
 
     if open_bal <= 0:
         return False, ""
 
-    loss_pct = (open_bal - current_balance) / open_bal
-    limit    = MAX_DAILY_DRAWDOWN_PCT
+    limit = MAX_DAILY_DRAWDOWN_PCT
 
+    if BOT_ONLY_DRAWDOWN:
+        limit_usd = limit * open_bal
+        if bot_pnl <= -limit_usd:
+            reason = (
+                f"Bot daily loss limit reached: bot is down ${-bot_pnl:,.2f} today "
+                f"(limit ${limit_usd:,.2f} = {limit*100:.0f}% of ${open_bal:,.2f}). "
+                f"Manual trades excluded. No new bot trades until tomorrow."
+            )
+            return True, reason
+        return False, ""
+
+    loss_pct = (open_bal - current_balance) / open_bal
     if loss_pct >= limit:
         reason = (
             f"Daily drawdown limit reached: account is down "
@@ -301,6 +350,10 @@ def _trailing_loop():
                         reason = "manual"
 
                     trade_log.log_exit(pid, exit_price, last_pnl, reason)
+
+                    # Bot-only drawdown: if this was a bot-owned position,
+                    # add its realized P&L to today's bot tally.
+                    _record_bot_close(str(pid), last_pnl)
 
             # Update previous position map
             prev_pos_map = {p["id"]: p for p in positions}
@@ -484,10 +537,17 @@ def report():
         # Drawdown state
         with _drawdown_lock:
             day_open = _day_open_balance
+            bot_pnl  = _bot_day_pnl if _bot_pnl_date == _date.today() else 0.0
+            bot_pos_count = len(_bot_positions)
         out["day_open_balance"] = round(day_open, 2)
         if day_open > 0:
             out["day_pnl"]      = round(balance - day_open, 2)
             out["day_pnl_pct"]  = round(100 * (balance - day_open) / day_open, 2)
+        out["drawdown_mode"]    = "bot_only" if BOT_ONLY_DRAWDOWN else "whole_account"
+        out["bot_day_pnl"]      = round(bot_pnl, 2)
+        out["bot_open_tracked"] = bot_pos_count
+        if BOT_ONLY_DRAWDOWN and day_open > 0:
+            out["bot_loss_limit_usd"] = round(MAX_DAILY_DRAWDOWN_PCT * day_open, 2)
         halted, halt_reason = _is_halted(balance)
         out["drawdown_halted"] = halted
         out["drawdown_reason"] = halt_reason or None
@@ -640,7 +700,7 @@ def reset_drawdown():
     if WEBHOOK_SECRET and secret != WEBHOOK_SECRET:
         return jsonify({"error": "Unauthorized"}), 401
 
-    global _day_open_balance, _day_open_date
+    global _day_open_balance, _day_open_date, _bot_day_pnl, _bot_pnl_date
     try:
         client = TradeLockerClient(
             base_url=TL_BASE_URL, email=TL_EMAIL,
@@ -654,8 +714,12 @@ def reset_drawdown():
     with _drawdown_lock:
         _day_open_balance = bal
         _day_open_date    = _date.today()
+        # Also clear the bot-only P&L tally so a bot-mode halt lifts too.
+        _bot_day_pnl      = 0.0
+        _bot_pnl_date     = _date.today()
     logger.info(f"[Drawdown] Manually reset — new day-open anchor ${bal:,.2f}. Bot un-halted.")
     return jsonify({"status": "drawdown_reset", "new_day_open_balance": round(bal, 2),
+                    "drawdown_mode": "bot_only" if BOT_ONLY_DRAWDOWN else "whole_account",
                     "halted": False}), 200
 
 @app.route("/send-report", methods=["POST", "GET"])
@@ -936,12 +1000,16 @@ def webhook():
     # trade would sit "open" forever in bot_logged_trades). The position
     # may not be visible via the API for a moment right after the order
     # fills, so retry briefly instead of checking only once.
+    # The same lookup also tags the position as bot-owned for bot-only
+    # drawdown accounting (one-trade-per-symbol guarantees it's ours).
     matched = False
     for attempt in range(4):
         try:
             for p in client.get_open_positions():
                 if p.get("name", "").upper() == ticker.upper() and p.get("side") == action:
                     trade_log.match_position(trade_id, p["id"])
+                    if BOT_ONLY_DRAWDOWN and str(p["id"]) not in _bot_positions:
+                        _register_bot_position(str(p["id"]), ticker)
                     matched = True
                     break
         except Exception as e:
