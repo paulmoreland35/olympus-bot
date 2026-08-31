@@ -90,6 +90,9 @@ if FORWARD_TARGETS:
         + ", ".join(label for label, _url, _secret in FORWARD_TARGETS)
     )
 RISK_PCT       = float(os.getenv("RISK_PCT",    "0.02"))
+# Fixed lot size for EVERY trade (overrides risk-based sizing entirely).
+# 0 = disabled (use dynamic RISK_PCT sizing). Set e.g. 0.01 per-deployment.
+FIXED_LOT      = float(os.getenv("FIXED_LOT",    "0"))
 DEFAULT_SL_PCT = float(os.getenv("DEFAULT_SL_PCT", "0.01"))
 # When an alert has no take-profit, set TP at this multiple of the SL distance
 # (e.g. 1.5 = risk:reward of 1.5:1). Tunable via env without a code change.
@@ -922,29 +925,35 @@ def webhook():
             return jsonify({"status": "blocked", "reason": msg}), 403
         logger.info(f"[Risk] R:R check passed: {rr:.2f} ✓")
 
-    # 8. Calculate lot size — check for per-symbol override first
-    override_key = f"LOT_OVERRIDE_{ticker.upper()}"
-    lot_override = os.getenv(override_key, "").strip()
-    if lot_override:
-        try:
-            lots = float(lot_override)
-            logger.info(f"[Risk] Using lot override for {ticker}: {lots} (via {override_key})")
-        except ValueError:
-            logger.warning(f"Invalid {override_key}='{lot_override}', falling back to dynamic sizing.")
-            lot_override = ""
-
-    if not lot_override:
-        try:
-            lots = calculate_lots(
-                balance=balance,
-                entry_price=entry,
-                stop_loss_price=sl,
-                risk_pct=RISK_PCT,
-                ticker=ticker,
-            )
-        except Exception as e:
-            logger.error(f"Position sizing error: {e}")
-            return jsonify({"error": "Position sizing failed", "detail": str(e)}), 400
+    # 8. Calculate lot size. Priority:
+    #    (a) FIXED_LOT env  -> every trade uses this exact lot size
+    #    (b) LOT_OVERRIDE_<TICKER> env -> fixed lot for that one symbol
+    #    (c) dynamic sizing -> RISK_PCT of balance based on SL distance
+    lots = None
+    if FIXED_LOT > 0:
+        lots = FIXED_LOT
+        logger.info(f"[Risk] Using FIXED_LOT for all trades: {lots}")
+    else:
+        override_key = f"LOT_OVERRIDE_{ticker.upper()}"
+        lot_override = os.getenv(override_key, "").strip()
+        if lot_override:
+            try:
+                lots = float(lot_override)
+                logger.info(f"[Risk] Using lot override for {ticker}: {lots} (via {override_key})")
+            except ValueError:
+                logger.warning(f"Invalid {override_key}='{lot_override}', falling back to dynamic sizing.")
+        if lots is None:
+            try:
+                lots = calculate_lots(
+                    balance=balance,
+                    entry_price=entry,
+                    stop_loss_price=sl,
+                    risk_pct=RISK_PCT,
+                    ticker=ticker,
+                )
+            except Exception as e:
+                logger.error(f"Position sizing error: {e}")
+                return jsonify({"error": "Position sizing failed", "detail": str(e)}), 400
 
     logger.info(
         f"Trade: {action.upper()} {ticker} | "

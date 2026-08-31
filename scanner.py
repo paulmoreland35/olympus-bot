@@ -388,7 +388,15 @@ def run_scanner(client=None):
                     logger.warning(f"[Scanner] Balance is zero, skipping {broker_symbol}.")
                     continue
 
-                lots = calculate_lots(balance, entry, sl, risk_pct=RISK_PCT, ticker=broker_symbol)
+                # FIXED_LOT env overrides risk-based sizing for every trade;
+                # RISK_PCT env overrides the default risk fraction.
+                fixed_lot = float(os.getenv("FIXED_LOT", "0") or 0)
+                if fixed_lot > 0:
+                    lots = fixed_lot
+                    logger.info(f"[Scanner] Using FIXED_LOT: {lots}")
+                else:
+                    risk_pct = float(os.getenv("RISK_PCT", str(RISK_PCT)) or RISK_PCT)
+                    lots = calculate_lots(balance, entry, sl, risk_pct=risk_pct, ticker=broker_symbol)
 
                 order = client.place_market_order(
                     symbol=broker_symbol,
