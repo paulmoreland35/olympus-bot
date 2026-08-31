@@ -134,19 +134,31 @@ def parse_olympus_message(message: str) -> dict:
     _FILLER = {"ON", "AT", "FOR", "SIGNAL", "ALERT", "TRADE", "ENTRY",
                "THE", "A", "IN", "NOW", "SETUP", "BUY", "SELL"}
 
-    # Try word immediately after BUY/SELL (skipping fillers)
     ticker = ""
-    after_action = re.findall(
-        r'\b(?:BUY|SELL)\s+((?:[A-Z0-9]+:)?[A-Z0-9]+)',
-        msg, re.IGNORECASE
-    )
-    for candidate in after_action:
-        candidate = candidate.upper()
-        if ":" in candidate:
-            candidate = candidate.split(":", 1)[-1]
-        if candidate not in _FILLER and len(candidate) >= 2:
-            ticker = candidate
-            break
+
+    # Highest priority: "... on <TICKER>" (e.g. "SELL Signal on NAS100 at ...").
+    # This beats grabbing the indicator's name (e.g. "Phoenix") by mistake.
+    on_match = re.search(r'\bon\s+((?:[A-Z0-9]+:)?[A-Z0-9]{2,10})\b', msg, re.IGNORECASE)
+    if on_match:
+        cand = on_match.group(1).upper()
+        if ":" in cand:
+            cand = cand.split(":", 1)[-1]
+        if cand not in _FILLER:
+            ticker = cand
+
+    # Next: the word immediately after BUY/SELL (Olympus format), skipping fillers
+    if not ticker:
+        after_action = re.findall(
+            r'\b(?:BUY|SELL)\s+((?:[A-Z0-9]+:)?[A-Z0-9]+)',
+            msg, re.IGNORECASE
+        )
+        for candidate in after_action:
+            candidate = candidate.upper()
+            if ":" in candidate:
+                candidate = candidate.split(":", 1)[-1]
+            if candidate not in _FILLER and len(candidate) >= 2:
+                ticker = candidate
+                break
 
     # Fallback: scan all pipe-separated segments for a symbol-shaped word
     if not ticker:
@@ -169,16 +181,28 @@ def parse_olympus_message(message: str) -> dict:
     ticker = remapped
 
     # ---- Entry price ------------------------------------------------------
-    entry_match = re.search(r'ENTRY[:\s]+([\d.]+)', msg, re.IGNORECASE)
-    if not entry_match:
-        raise ValueError(f"Could not find ENTRY in message: {msg}")
-    entry = float(entry_match.group(1))
+    # Accept several formats:
+    #   Olympus:  "ENTRY: 1.359"
+    #   Phoenix:  "... on NAS100 at 29403.6"   ("at"/"@" <price>)
+    #   Fallback: the first decimal number in the message
+    def _num(s):
+        return float(s.replace(",", ""))
 
-    # ---- Stop Loss --------------------------------------------------------
-    sl_match = re.search(r'\bSL[:\s]+([\d.]+)', msg, re.IGNORECASE)
-    if not sl_match:
-        raise ValueError(f"Could not find SL in message: {msg}")
-    sl = float(sl_match.group(1))
+    entry_match = re.search(r'ENTRY[:\s]+([\d.,]+)', msg, re.IGNORECASE)
+    if not entry_match:
+        entry_match = re.search(r'\b(?:at|@)\s*\$?([\d,]+\.?[\d]*)', msg, re.IGNORECASE)
+    if not entry_match:
+        # last resort: first decimal-looking number (avoids picking a star rating)
+        entry_match = re.search(r'([\d,]+\.[\d]+)', msg)
+    if not entry_match:
+        raise ValueError(f"Could not find entry price in message: {msg}")
+    entry = _num(entry_match.group(1))
+
+    # ---- Stop Loss (OPTIONAL) --------------------------------------------
+    # Many signal indicators (e.g. Phoenix) send no stop. Leave sl=0 and the
+    # webhook applies its default SL (DEFAULT_SL_PCT) + default TP.
+    sl_match = re.search(r'\bSL[:\s]+([\d.,]+)', msg, re.IGNORECASE)
+    sl = _num(sl_match.group(1)) if sl_match else 0.0
 
     # ---- Take Profits (all optional — trade executes with SL only if absent)
     tp1_match = re.search(r'TP1[:\s]+([\d.]+)', msg, re.IGNORECASE)
