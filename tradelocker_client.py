@@ -132,7 +132,14 @@ class TradeLockerClient:
         )
 
     def get_balance(self) -> float:
-        """Refresh and return current account balance."""
+        """Refresh and return current account balance.
+
+        Matches the account by the ID that _load_account already resolved
+        (self.account_id) — NOT by re-matching TL_ACC_NUM against accNum.
+        TL_ACC_NUM may be an account *id* (e.g. 746347) whose accNum is
+        something else (e.g. "4"); matching by accNum would miss it and
+        fall back to the wrong account. Falls back to accNum, then first.
+        """
         try:
             url = f"{self.base_url}/auth/jwt/all-accounts"
             resp = self.session.get(url, timeout=10)
@@ -140,8 +147,15 @@ class TradeLockerClient:
             data = resp.json()
             accounts = data if isinstance(data, list) else data.get("accounts", [])
             if accounts:
-                target_num = (os.getenv("TL_ACC_NUM") or os.getenv("TL_ACCOUNT_NUM", "")).strip()
-                account = next((a for a in accounts if str(a.get("accNum")) == target_num), accounts[0]) if target_num else accounts[0]
+                account = None
+                if self.account_id:
+                    account = next((a for a in accounts
+                                    if str(a.get("id")) == str(self.account_id)), None)
+                if account is None and self.acc_num:
+                    account = next((a for a in accounts
+                                    if str(a.get("accNum")) == str(self.acc_num)), None)
+                if account is None:
+                    account = accounts[0]
                 self.balance = float(
                     account.get("accountBalance")
                     or account.get("balance")
