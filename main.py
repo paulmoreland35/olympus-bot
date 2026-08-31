@@ -16,6 +16,7 @@ Olympus sends everything needed in its message:
 
 import logging
 import os
+import re
 import time
 import threading
 
@@ -733,6 +734,35 @@ def send_report():
         return jsonify({"error": "Unauthorized"}), 401
     ok = send_report_now()
     return jsonify({"sent": ok}), (200 if ok else 502)
+
+@app.route("/coach", methods=["POST", "GET"])
+def coach():
+    """
+    On-demand AI coaching note — same analysis as the daily report's
+    Coach's Notes section (win rate, streaks, drawdown risk, concrete
+    adjustments), available anytime instead of waiting for the scheduled
+    email. Returns the note as JSON rather than sending an email. Requires
+    ANTHROPIC_API_KEY on this deployment. Secret-protected.
+    """
+    body = request.get_json(silent=True) or {}
+    secret = body.get("secret") or request.args.get("secret")
+    if WEBHOOK_SECRET and secret != WEBHOOK_SECRET:
+        return jsonify({"error": "Unauthorized"}), 401
+
+    if not os.getenv("ANTHROPIC_API_KEY"):
+        return jsonify({"error": "ANTHROPIC_API_KEY not set on this deployment"}), 400
+
+    from daily_report import _parse_sources, _fetch, _generate_coaching
+
+    accounts_data = [(label, _fetch(url)) for label, url in _parse_sources()]
+    coaching_html = _generate_coaching(accounts_data)
+    if not coaching_html:
+        return jsonify({"error": "Coaching generation failed or returned nothing — check logs"}), 502
+
+    coaching_text = re.sub(r"<[^>]+>", "\n", coaching_html)
+    coaching_text = re.sub(r"\n{2,}", "\n\n", coaching_text).strip()
+
+    return jsonify({"coaching_text": coaching_text, "coaching_html": coaching_html}), 200
 
 # ------------------------------------------------------------------
 # Webhook endpoint
