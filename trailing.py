@@ -17,12 +17,18 @@ by the broker:
 """
 
 import logging
+import os
 import threading
 from typing import Optional
 
 from risk import _contract_size   # reuse existing contract size table
 
 logger = logging.getLogger(__name__)
+
+# Fraction of the entry-to-TP distance price must reach before SL moves to
+# breakeven. 0.5 = halfway to TP. Tunable per-deployment via env without a
+# code change.
+BREAKEVEN_TP_RATIO = float(os.getenv("BREAKEVEN_TP_RATIO", "0.5"))
 
 
 class TrailingStopManager:
@@ -97,12 +103,13 @@ class TrailingStopManager:
             positions = []
             for pid, s in self._state.items():
                 positions.append({
-                    "id":          pid,
-                    "ticker":      s.get("ticker", "?"),
-                    "side":        s.get("side", "?"),
-                    "entry":       s.get("entry", 0),
-                    "trail_dist":  round(s.get("trail_dist", 0), 5),
-                    "activated":   s.get("activated", False),
+                    "id":              pid,
+                    "ticker":          s.get("ticker", "?"),
+                    "side":            s.get("side", "?"),
+                    "entry":           s.get("entry", 0),
+                    "activation_dist": round(s.get("activation_dist", 0), 5),
+                    "trail_dist":      round(s.get("trail_dist", 0), 5),
+                    "activated":       s.get("activated", False),
                     "current_sl":  s.get("last_sl", 0),
                 })
             return {"tracked": len(positions), "positions": positions}
@@ -151,13 +158,15 @@ class TrailingStopManager:
         Core logic for one position.
         Returns new SL price if an update is needed, else None.
 
-        Activation: price must move 1× SL distance in profit from entry.
-        This works with or without a TP on the position.
+        Activation: price must reach BREAKEVEN_TP_RATIO of the way from
+        entry to TP (default 50%). Falls back to a 1× SL-distance trigger
+        when the position has no TP (e.g. broker dropped it on order entry).
         """
         pos_id      = pos["id"]
         side        = pos.get("side", "").lower()
         entry       = pos.get("openPrice", 0)
         current_sl  = pos.get("stopLoss", 0)
+        tp          = pos.get("takeProfit", 0)
         ticker      = pos.get("name", pos_id)
 
         if not current_sl or current_sl <= 0:
@@ -172,21 +181,27 @@ class TrailingStopManager:
             logger.debug(f"[Trailing] {ticker}: could not determine current price — skipping")
             return None
 
-        # Activation trigger: price 1× SL distance in profit from entry
-        sl_dist  = abs(entry - current_sl)
+        sl_dist = abs(entry - current_sl)
         if sl_dist == 0:
             return None
-        if side == "buy":
-            activation_price = entry + sl_dist   # 1:1 in profit
+
+        # Activation trigger: BREAKEVEN_TP_RATIO of the way from entry to TP.
+        # Trailing distance (once active) always stays the original SL distance
+        # regardless of where activation happens.
+        if tp and tp > 0:
+            activation_dist = abs(tp - entry) * BREAKEVEN_TP_RATIO
         else:
-            activation_price = entry - sl_dist
+            activation_dist = sl_dist
+        if side == "buy":
+            activation_price = entry + activation_dist
+        else:
+            activation_price = entry - activation_dist
 
         with self._lock:
             state = self._state.get(pos_id)
 
             if state is None:
-                trail_dist = sl_dist
-                activated  = False
+                activated = False
 
                 # Already past activation on first poll — activate immediately
                 if (side == "buy"  and current_price >= activation_price) or \
@@ -199,26 +214,27 @@ class TrailingStopManager:
                     )
 
                 self._state[pos_id] = {
-                    "ticker":     ticker,
-                    "side":       side,
-                    "entry":      entry,
-                    "trail_dist": trail_dist,
-                    "activated":  activated,
-                    "last_sl":    current_sl,
+                    "ticker":          ticker,
+                    "side":            side,
+                    "entry":           entry,
+                    "activation_dist": activation_dist,
+                    "trail_dist":      sl_dist,
+                    "activated":       activated,
+                    "last_sl":         current_sl,
                 }
                 state = self._state[pos_id]
 
                 if not activated:
                     return None
 
-            # Recalculate activation_price using stored trail_dist (locked in at init)
-            trail_dist       = state["trail_dist"]
+            # Recalculate activation_price using stored activation_dist (locked in at init)
+            activation_dist  = state["activation_dist"]
             if side == "buy":
-                activation_price = state["entry"] + trail_dist
+                activation_price = state["entry"] + activation_dist
             else:
-                activation_price = state["entry"] - trail_dist
+                activation_price = state["entry"] - activation_dist
 
-            # ----- Phase 1: waiting for 1:1 profit -----
+            # ----- Phase 1: waiting for breakeven trigger -----
             if not state["activated"]:
                 reached = (side == "buy"  and current_price >= activation_price) or \
                           (side == "sell" and current_price <= activation_price)
@@ -228,9 +244,9 @@ class TrailingStopManager:
 
                 state["activated"] = True
                 logger.info(
-                    f"[Trailing] {ticker}: 1:1 profit reached! "
+                    f"[Trailing] {ticker}: breakeven trigger reached! "
                     f"entry={entry} activation={activation_price:.5f} price={current_price:.5f} "
-                    f"→ moving SL to breakeven ({entry}), trail_dist={trail_dist:.5f}"
+                    f"→ moving SL to breakeven ({entry}), trail_dist={state['trail_dist']:.5f}"
                 )
                 new_sl = entry
 
