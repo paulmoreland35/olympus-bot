@@ -110,13 +110,27 @@ DEFAULT_TP_RR  = float(os.getenv("DEFAULT_TP_RR", "1.5"))
 # "PHOENIX" specifically, so already-configured deployments keep working.
 _LEGACY_POINTS_ALIASES = {"PHOENIX": ("DEFAULT_SL_POINTS", "DEFAULT_TP_POINTS")}
 
+# Extra raw-text phrases that also count as a match for a given name, for
+# indicators whose alert text doesn't always contain the name itself (e.g.
+# Phoenix's "Day Trader"/"Scalper" sub-modes). Add more per-deployment via
+# SOURCE_ALIASES_<NAME>="phrase one,phrase two" without a code change.
+_BUILTIN_RAW_TEXT_ALIASES = {"PHOENIX": ["day trader", "scalper"]}
+
+
+def _raw_text_aliases_for(name: str) -> list:
+    aliases = list(_BUILTIN_RAW_TEXT_ALIASES.get(name, []))
+    extra = os.getenv(f"SOURCE_ALIASES_{name}", "")
+    aliases += [a.strip().lower() for a in extra.split(",") if a.strip()]
+    return aliases
+
 
 def _lookup_named_points_override(raw_body: str, data):
     """
     Find a per-indicator fixed SL/TP point override for this signal. Matched
     by an explicit "source" field in the JSON payload, or by a configured
-    <NAME> appearing case-insensitively in the raw alert text. Returns
-    (sl_points, tp_points, name) or None if nothing is configured/matches.
+    <NAME> (or one of its raw-text aliases) appearing case-insensitively in
+    the raw alert text. Returns (sl_points, tp_points, name) or None if
+    nothing is configured/matches.
     """
     explicit_source = str(data.get("source", "")).strip().upper() if isinstance(data, dict) else ""
     raw_lower = raw_body.lower()
@@ -133,7 +147,10 @@ def _lookup_named_points_override(raw_body: str, data):
             continue
         if sl_pts <= 0 or tp_pts <= 0:
             continue
-        if explicit_source == name or name.lower() in raw_lower:
+        text_match = name.lower() in raw_lower or any(
+            alias in raw_lower for alias in _raw_text_aliases_for(name)
+        )
+        if explicit_source == name or text_match:
             return sl_pts, tp_pts, name
     return None
 
