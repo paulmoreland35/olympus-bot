@@ -494,7 +494,11 @@ logger.info(f"[Trailing] Background loop started (polling every {TRAILING_POLL_S
 
 @app.route("/", methods=["GET"])
 def health():
-    return jsonify({"status": "Olympus bot is running ✓"}), 200
+    # RAILWAY_GIT_COMMIT_SHA is auto-injected by Railway on every deploy —
+    # lets you confirm each account's bot is actually running the latest
+    # pushed code (hit / on each deployment and compare to `git log`).
+    commit = os.getenv("RAILWAY_GIT_COMMIT_SHA", "unknown")[:7]
+    return jsonify({"status": "Olympus bot is running ✓", "commit": commit}), 200
 
 # ------------------------------------------------------------------
 # Trailing stop status
