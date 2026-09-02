@@ -570,6 +570,45 @@ def risk_status():
         "status":             "🔴 HALTED — limit hit" if halted else "🟢 Trading allowed",
     }), 200
 
+@app.route("/positions", methods=["POST", "GET"])
+def positions():
+    """
+    Raw open positions straight from the broker — ticker, side, entry,
+    SL, TP, qty — regardless of whether the bot placed them. Trailing
+    manages every open position the same way, bot-placed or manual, but
+    only if it has a stop loss set; this is the direct way to check that,
+    since /trailing only shows positions it's already tracking (which
+    silently excludes anything with no SL) and /trades only knows about
+    trades the bot itself logged. Secret-protected — this is account data.
+    """
+    secret = request.args.get("secret") or (request.get_json(silent=True) or {}).get("secret")
+    if WEBHOOK_SECRET and secret != WEBHOOK_SECRET:
+        return jsonify({"error": "Unauthorized"}), 401
+
+    try:
+        client = TradeLockerClient(
+            base_url=TL_BASE_URL, email=TL_EMAIL,
+            password=TL_PASSWORD, server=TL_SERVER,
+        )
+        client.authenticate()
+        raw = client.get_open_positions()
+    except Exception as e:
+        return jsonify({"error": "Broker connection failed", "detail": str(e)}), 502
+
+    out = [{
+        "id":         p.get("id"),
+        "ticker":     p.get("name"),
+        "side":       p.get("side"),
+        "qty":        p.get("qty"),
+        "entry":      p.get("openPrice"),
+        "sl":         p.get("stopLoss") or None,
+        "tp":         p.get("takeProfit") or None,
+        "has_sl":     bool(p.get("stopLoss")),
+        "has_tp":     bool(p.get("takeProfit")),
+    } for p in raw]
+
+    return jsonify({"count": len(out), "positions": out}), 200
+
 # ------------------------------------------------------------------
 # Trade log endpoints
 # ------------------------------------------------------------------
