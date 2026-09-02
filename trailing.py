@@ -4,7 +4,7 @@ Trailing Stop Manager
 Polls every open TradeLocker position (bot-placed OR manual) and moves its
 SL through two staged lock-in points on the way to TP1:
 
-  1. Once price reaches BREAKEVEN_TP_RATIO of the way to TP (default 30%):
+  1. Once price reaches BREAKEVEN_TP_RATIO of the way to TP (default 25%):
        → Move SL to breakeven (entry price), then trail it behind price
          at the original SL distance.
 
@@ -34,9 +34,9 @@ from risk import _contract_size   # reuse existing contract size table
 logger = logging.getLogger(__name__)
 
 # Fraction of the entry-to-TP distance price must reach before SL moves to
-# breakeven (stage 1). 0.3 = 30% of the way to TP. Tunable per-deployment
+# breakeven (stage 1). 0.25 = 25% of the way to TP. Tunable per-deployment
 # via env without a code change.
-BREAKEVEN_TP_RATIO = float(os.getenv("BREAKEVEN_TP_RATIO", "0.3"))
+BREAKEVEN_TP_RATIO = float(os.getenv("BREAKEVEN_TP_RATIO", "0.25"))
 
 # Fraction of the entry-to-TP distance price must reach before SL locks in
 # to the stage-1 (breakeven-trigger) price level (stage 2). Must be greater
