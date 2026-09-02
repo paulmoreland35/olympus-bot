@@ -516,7 +516,16 @@ def health():
     # lets you confirm each account's bot is actually running the latest
     # pushed code (hit / on each deployment and compare to `git log`).
     commit = os.getenv("RAILWAY_GIT_COMMIT_SHA", "unknown")[:7]
-    return jsonify({"status": "Olympus bot is running ✓", "commit": commit}), 200
+    # trade_log defaults to /tmp, which Railway wipes on every redeploy — a
+    # non-/tmp path here means TRADE_LOG_PATH is pointed at a mounted
+    # Volume and trade history will actually survive future deploys.
+    log_path = trade_log._LOG_PATH
+    return jsonify({
+        "status":              "Olympus bot is running ✓",
+        "commit":              commit,
+        "trade_log_path":      log_path,
+        "trade_log_persistent": not log_path.startswith("/tmp"),
+    }), 200
 
 # ------------------------------------------------------------------
 # Trailing stop status
