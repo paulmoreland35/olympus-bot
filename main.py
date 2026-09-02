@@ -26,7 +26,7 @@ from dotenv import load_dotenv
 from tradelocker_client import TradeLockerClient
 from risk import calculate_lots, calculate_default_sl
 from parser import parse_olympus_message, remap_symbol
-from trailing import TrailingStopManager
+from trailing import TrailingStopManager, BREAKEVEN_TP_RATIO, LOCK_IN_TP_RATIO
 from trade_log import TradeLog
 from scanner import start_scanner_thread
 
@@ -281,14 +281,16 @@ def _record_bot_close(position_id: str, pnl: float):
                 f"bot day P&L now ${running:,.2f}.")
 
 
-def _link_trade_position(client, trade_id: str, ticker: str, action: str):
+def _link_trade_position(client, trade_id: str, ticker: str, action: str, tp1: float = 0):
     """
     Background lookup that links a freshly-placed order to its broker
     position ID (retrying briefly, since the position may not be visible
-    via the API for a moment right after the order fills) and tags it as
-    bot-owned for bot-only drawdown accounting. Always run off-thread from
-    the webhook response — TradingView times out webhook deliveries after
-    just a few seconds, so this must never block the response.
+    via the API for a moment right after the order fills), tags it as
+    bot-owned for bot-only drawdown accounting, and — if the broker dropped
+    the TP on the order — hands the intended TP1 to the trailing manager so
+    two-stage breakeven/lock-in still works off it. Always run off-thread
+    from the webhook response — TradingView times out webhook deliveries
+    after just a few seconds, so this must never block the response.
     """
     matched = False
     for attempt in range(4):
@@ -298,6 +300,8 @@ def _link_trade_position(client, trade_id: str, ticker: str, action: str):
                     trade_log.match_position(trade_id, p["id"])
                     if BOT_ONLY_DRAWDOWN and str(p["id"]) not in _bot_positions:
                         _register_bot_position(str(p["id"]), ticker)
+                    if tp1 and tp1 > 0 and not (p.get("takeProfit") or 0):
+                        trailing_manager.register_tp(str(p["id"]), tp1)
                     matched = True
                     break
         except Exception as e:
@@ -1123,10 +1127,11 @@ def webhook():
         logger.error(f"Order failed: {e}")
         return jsonify({"error": "Order failed", "detail": str(e)}), 502
 
-    # 10. Register TP with trailing manager (covers TP-dropped case too)
+    # 10. Order placed. TP1 (if any) gets handed to the trailing manager
+    # once _link_trade_position resolves the real position_id below — the
+    # trailing manager keys its state by position_id, not order_id, so
+    # registering here (before that lookup) would never actually be read.
     order_id = str(order.get("d", {}).get("orderId", "") if isinstance(order.get("d"), dict) else "")
-    if tp1 and tp1 > 0:
-        trailing_manager.register_tp(order_id, tp1)
 
     # Log the entry
     trade_id = trade_log.log_entry(
@@ -1142,12 +1147,13 @@ def webhook():
     # may not be visible via the API for a moment right after the order
     # fills, so retry briefly instead of checking only once.
     # The same lookup also tags the position as bot-owned for bot-only
-    # drawdown accounting (one-trade-per-symbol guarantees it's ours).
+    # drawdown accounting (one-trade-per-symbol guarantees it's ours), and
+    # registers TP1 with the trailing manager if the broker dropped it.
     # Runs in the background — TradingView times out webhook deliveries
     # after just a few seconds, so this must never block the response.
     threading.Thread(
         target=_link_trade_position,
-        args=(client, trade_id, ticker, action),
+        args=(client, trade_id, ticker, action, tp1 or 0),
         daemon=True,
         name="link-trade-position",
     ).start()
@@ -1163,7 +1169,7 @@ def webhook():
         "sl":       sl,
         "tp1":      tp1 if not tp_dropped else None,
         "tp_note":  "TP rejected by broker (price moved) — order placed with SL only" if tp_dropped else None,
-        "trailing": "will activate at 50% toward TP",
+        "trailing": f"breakeven at {BREAKEVEN_TP_RATIO*100:.0f}% to TP, locks in at {LOCK_IN_TP_RATIO*100:.0f}%",
         "balance":  balance,
         "risked":   round(balance * RISK_PCT, 2),
         "order":    order,

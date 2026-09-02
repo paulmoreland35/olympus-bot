@@ -65,16 +65,19 @@ class TrailingStopManager:
     # Public API
     # ------------------------------------------------------------------
 
-    def register_tp(self, order_id: str, tp1: float):
+    def register_tp(self, position_id: str, tp1: float):
         """
-        Pre-register a TP1 value by order_id so trailing can work even when
-        the broker didn't attach the TP to the position (TP dropped case).
-        Called from the webhook right after the order is placed.
+        Pre-register a TP1 value by broker position_id so trailing can work
+        even when the broker didn't attach the TP to the position (TP
+        dropped case). Called once the webhook has resolved the position_id
+        for a freshly-placed order (see _link_trade_position in main.py) —
+        _evaluate() consumes this the first time it sees that position with
+        no takeProfit of its own.
         """
         if tp1 and tp1 > 0:
             with self._lock:
-                self._pending_tp[order_id] = tp1
-            logger.info(f"[Trailing] Pre-registered TP1={tp1} for order {order_id}")
+                self._pending_tp[position_id] = tp1
+            logger.info(f"[Trailing] Pre-registered TP1={tp1} for position {position_id}")
 
     def process(self, positions: list[dict]) -> list[tuple[str, float]]:
         """
@@ -219,6 +222,11 @@ class TrailingStopManager:
                 if sl_dist == 0:
                     return None
 
+                if not (tp and tp > 0):
+                    # Broker dropped the TP on this position (e.g. rejected
+                    # at order time because price had moved) — fall back to
+                    # the TP1 the webhook pre-registered for it, if any.
+                    tp = self._pending_tp.pop(pos_id, 0)
                 has_tp = bool(tp and tp > 0)
                 if has_tp:
                     tp_dist = abs(tp - entry)
