@@ -835,6 +835,34 @@ def reset_drawdown():
                     "drawdown_mode": "bot_only" if BOT_ONLY_DRAWDOWN else "whole_account",
                     "halted": False}), 200
 
+@app.route("/reconcile-trades", methods=["POST", "GET"])
+def reconcile_trades():
+    """
+    Close out trade-log entries that never got linked to a broker position
+    (the position-linking race fixed on 2026-09-02 could leave a handful
+    stuck "open" forever with no exit recorded) by matching them against
+    TradeLocker's own order history — broker truth, independent of this
+    log's own bookkeeping. Secret-protected since it writes to the log.
+    """
+    secret = request.args.get("secret") or (request.get_json(silent=True) or {}).get("secret")
+    if WEBHOOK_SECRET and secret != WEBHOOK_SECRET:
+        return jsonify({"error": "Unauthorized"}), 401
+
+    try:
+        client = TradeLockerClient(
+            base_url=TL_BASE_URL, email=TL_EMAIL,
+            password=TL_PASSWORD, server=TL_SERVER,
+        )
+        client.authenticate()
+        closed = client.get_closed_trades()
+    except Exception as e:
+        return jsonify({"error": "Broker auth/history fetch failed", "detail": str(e)}), 502
+
+    result = trade_log.reconcile_orphans(closed)
+    logger.info(f"[TradeLog] Reconciled orphans — matched {len(result['matched'])}, "
+                f"unmatched {len(result['unmatched'])}.")
+    return jsonify(result), 200
+
 @app.route("/send-report", methods=["POST", "GET"])
 def send_report():
     """Manually trigger the daily report email (for testing)."""

@@ -143,6 +143,76 @@ class TradeLog:
             self._save()
             return True
 
+    def reconcile_orphans(self, closed_trades: list[dict]) -> dict:
+        """
+        Close out log entries that never got a position_id (e.g. a burst of
+        alerts raced past the linking window before that was fixed) by
+        matching them against TradeLocker's own order history — broker
+        truth, independent of this log — instead of leaving them stuck
+        "open" forever.
+
+        closed_trades: TradeLockerClient.get_closed_trades() output, each
+        {name, side, qty, openPrice, closePrice, move, outcome,
+        exit_reason, closedAt}.
+
+        Matches by ticker + side + closest entry price among broker trades
+        that closed at/after this orphan's own opened_at, each broker trade
+        consumed at most once. Dollar P&L is reconstructed via contract
+        size (same approach used elsewhere in this codebase for approximate
+        P&L) — an approximation, not the broker's authoritative figure, but
+        far better than an orphan sitting open indefinitely with no exit
+        data at all.
+
+        Returns {"matched": [...ids], "unmatched": [...ids]} — "unmatched"
+        orphans had no broker trade to pair with (outside the fetched
+        window, or genuinely still open) and are left untouched.
+        """
+        from risk import _contract_size
+
+        with self._lock:
+            orphans = [t for t in self._trades
+                       if t["position_id"] is None and t["closed_at"] is None]
+            used_idx: set = set()
+            matched_ids = []
+
+            for orphan in orphans:
+                try:
+                    opened_ms = datetime.fromisoformat(orphan["opened_at"]).timestamp() * 1000
+                except Exception:
+                    continue
+
+                candidates = [
+                    (i, c) for i, c in enumerate(closed_trades)
+                    if i not in used_idx
+                    and str(c.get("name", "")).upper() == orphan["ticker"]
+                    and c.get("side") == orphan["side"]
+                    and (c.get("closedAt") or 0) >= opened_ms - 2000  # small clock-skew tolerance
+                ]
+                if not candidates:
+                    continue
+                i, best = min(candidates, key=lambda ic: abs(ic[1]["openPrice"] - orphan["entry"]))
+                used_idx.add(i)
+
+                contract = _contract_size(orphan["ticker"])
+                pnl = (
+                    round(best["move"] * orphan["lots"] * contract *
+                          (1 if orphan["side"] == "buy" else -1), 2)
+                    if contract else None
+                )
+
+                orphan["closed_at"]   = datetime.fromtimestamp(
+                    best["closedAt"] / 1000, tz=timezone.utc
+                ).isoformat()
+                orphan["exit_price"]  = best["closePrice"]
+                orphan["pnl"]         = pnl
+                orphan["outcome"]     = "be" if (pnl is not None and abs(pnl) < 0.01) else best["outcome"]
+                orphan["exit_reason"] = best["exit_reason"]
+                matched_ids.append(orphan["id"])
+
+            self._save()
+            unmatched_ids = [t["id"] for t in orphans if t["id"] not in matched_ids]
+            return {"matched": matched_ids, "unmatched": unmatched_ids}
+
     def log_exit(
         self,
         position_id:  str,
