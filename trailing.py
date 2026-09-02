@@ -219,8 +219,6 @@ class TrailingStopManager:
                 # entry right after breakeven, which would make it 0 and
                 # break trailing permanently from that point on.
                 sl_dist = abs(entry - current_sl)
-                if sl_dist == 0:
-                    return None
 
                 if not (tp and tp > 0):
                     # Broker dropped the TP on this position (e.g. rejected
@@ -228,6 +226,27 @@ class TrailingStopManager:
                     # the TP1 the webhook pre-registered for it, if any.
                     tp = self._pending_tp.pop(pos_id, 0)
                 has_tp = bool(tp and tp > 0)
+
+                if sl_dist == 0:
+                    # SL is already sitting at breakeven with no state on
+                    # file for this position — it must have already passed
+                    # stage 1 before this process started tracking it (e.g.
+                    # a redeploy wiped in-memory state mid-trade). The real
+                    # original SL distance is gone, so without a TP to
+                    # infer a trail distance from there is nothing safe to
+                    # do. With a TP, resume trailing using the same
+                    # distance a fresh position would use for its stage-1
+                    # trigger, rather than stalling on this position for
+                    # the rest of its life.
+                    if not has_tp:
+                        return None
+                    sl_dist = abs(tp - entry) * BREAKEVEN_TP_RATIO
+                    logger.warning(
+                        f"[Trailing] {ticker} ({pos_id}): found at breakeven "
+                        f"with no prior state (likely a restart) — resuming "
+                        f"trailing with an inferred distance of {sl_dist:.5f}."
+                    )
+
                 if has_tp:
                     tp_dist = abs(tp - entry)
                     level_a_dist = tp_dist * BREAKEVEN_TP_RATIO
