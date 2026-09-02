@@ -519,7 +519,7 @@ def health():
     # trade_log defaults to /tmp, which Railway wipes on every redeploy — a
     # non-/tmp path here means TRADE_LOG_PATH is pointed at a mounted
     # Volume and trade history will actually survive future deploys.
-    log_path = trade_log._LOG_PATH
+    log_path = trade_log.log_path
     return jsonify({
         "status":              "Olympus bot is running ✓",
         "commit":              commit,

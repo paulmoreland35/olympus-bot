@@ -39,9 +39,10 @@ _LOG_PATH = os.getenv("TRADE_LOG_PATH", "/tmp/trade_log.json")
 
 class TradeLog:
     def __init__(self):
-        self._lock   = threading.Lock()
+        self._lock    = threading.Lock()
         self._trades: list[dict] = []
-        self._id_seq = 0
+        self._id_seq  = 0
+        self.log_path = _LOG_PATH  # exposed so callers can check persistence setup
         self._load()
 
     # ------------------------------------------------------------------
