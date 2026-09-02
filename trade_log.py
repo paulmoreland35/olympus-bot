@@ -41,6 +41,7 @@ class TradeLog:
     def __init__(self):
         self._lock   = threading.Lock()
         self._trades: list[dict] = []
+        self._id_seq = 0
         self._load()
 
     # ------------------------------------------------------------------
@@ -81,7 +82,14 @@ class TradeLog:
     ) -> str:
         """Record a new trade entry.  Returns the trade ID."""
         now = datetime.now(timezone.utc)
-        trade_id = f"{now.strftime('%Y%m%dT%H%M%S')}_{ticker}"
+        with self._lock:
+            self._id_seq += 1
+            seq = self._id_seq
+        # A trailing sequence number guarantees uniqueness even when two
+        # trades on the same ticker land in the same second — a real
+        # scenario during a burst of alerts — which second-resolution
+        # timestamps alone would silently collide on.
+        trade_id = f"{now.strftime('%Y%m%dT%H%M%S')}_{ticker}_{seq}"
 
         record = {
             "id":               trade_id,
@@ -109,14 +117,31 @@ class TradeLog:
         logger.info(f"[TradeLog] Entry logged: {ticker} {side.upper()} {lots} @ {entry}")
         return trade_id
 
-    def match_position(self, trade_id: str, position_id: str):
-        """Link a trade log entry to its TradeLocker position ID."""
+    def try_claim_position(self, trade_id: str, position_id: str) -> bool:
+        """
+        Atomically link this trade to position_id — unless some other trade
+        has already claimed that same position_id, in which case this call
+        fails so the caller can try its next candidate position instead.
+
+        Needed because several trades on the same ticker+side can be open
+        at once (e.g. a burst of alerts within the same second): without
+        this check, every one of their background linking lookups would
+        independently pick the same first broker position that matches
+        ticker+side, leaving the others' position_id null forever and
+        their eventual closes unrecorded.
+        """
         with self._lock:
+            target = None
             for t in self._trades:
-                if t["id"] == trade_id and t["position_id"] is None:
-                    t["position_id"] = position_id
-                    self._save()
-                    return
+                if t["id"] == trade_id:
+                    target = t
+                elif t["position_id"] == position_id:
+                    return False
+            if target is None or target["position_id"] is not None:
+                return False
+            target["position_id"] = position_id
+            self._save()
+            return True
 
     def log_exit(
         self,

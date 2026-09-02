@@ -281,23 +281,37 @@ def _record_bot_close(position_id: str, pnl: float):
                 f"bot day P&L now ${running:,.2f}.")
 
 
-def _link_trade_position(client, trade_id: str, ticker: str, action: str, tp1: float = 0):
+def _link_trade_position(client, trade_id: str, ticker: str, action: str,
+                          entry: float = 0, tp1: float = 0):
     """
     Background lookup that links a freshly-placed order to its broker
-    position ID (retrying briefly, since the position may not be visible
-    via the API for a moment right after the order fills), tags it as
-    bot-owned for bot-only drawdown accounting, and — if the broker dropped
-    the TP on the order — hands the intended TP1 to the trailing manager so
-    two-stage breakeven/lock-in still works off it. Always run off-thread
-    from the webhook response — TradingView times out webhook deliveries
-    after just a few seconds, so this must never block the response.
+    position ID (retrying, since the position may not be visible via the
+    API for a moment right after the order fills, and TradeLocker's
+    positions endpoint can also rate-limit under a burst of near-
+    simultaneous orders), tags it as bot-owned for bot-only drawdown
+    accounting, and — if the broker dropped the TP on the order — hands
+    the intended TP1 to the trailing manager so two-stage breakeven/
+    lock-in still works off it. Always run off-thread from the webhook
+    response — TradingView times out webhook deliveries after just a few
+    seconds, so this must never block the response.
+
+    Candidates are ranked by closeness of openPrice to our own entry price
+    and claimed atomically via trade_log.try_claim_position(), so that
+    several same-ticker-same-side trades opened within the same second
+    (a real scenario — TradeLocker positions endpoint has returned
+    multiple matches for a single burst of alerts) each land on their own
+    distinct broker position instead of racing for the same one.
     """
     matched = False
-    for attempt in range(4):
+    for attempt in range(6):
         try:
-            for p in client.get_open_positions():
-                if p.get("name", "").upper() == ticker.upper() and p.get("side") == action:
-                    trade_log.match_position(trade_id, p["id"])
+            candidates = [
+                p for p in client.get_open_positions()
+                if p.get("name", "").upper() == ticker.upper() and p.get("side") == action
+            ]
+            candidates.sort(key=lambda p: abs(float(p.get("openPrice", 0) or 0) - entry))
+            for p in candidates:
+                if trade_log.try_claim_position(trade_id, str(p["id"])):
                     if BOT_ONLY_DRAWDOWN and str(p["id"]) not in _bot_positions:
                         _register_bot_position(str(p["id"]), ticker)
                     if tp1 and tp1 > 0 and not (p.get("takeProfit") or 0):
@@ -305,10 +319,14 @@ def _link_trade_position(client, trade_id: str, ticker: str, action: str, tp1: f
                     matched = True
                     break
         except Exception as e:
+            err = str(e)
             logger.warning(f"[TradeLog] Position lookup failed (attempt {attempt + 1}): {e}")
+            if "429" in err or "Too Many Requests" in err.lower():
+                time.sleep(5)
+                continue
         if matched:
             break
-        time.sleep(1.5)
+        time.sleep(2)
     if not matched:
         logger.warning(f"Could not link trade {trade_id} to a position ID after retries.")
 
@@ -1149,15 +1167,18 @@ def webhook():
     # starts as None otherwise, and log_exit() can never find it — every
     # trade would sit "open" forever in bot_logged_trades). The position
     # may not be visible via the API for a moment right after the order
-    # fills, so retry briefly instead of checking only once.
+    # fills, so retry instead of checking only once — candidates are
+    # ranked by entry-price closeness and claimed atomically so multiple
+    # same-ticker-same-side trades opened close together each land on
+    # their own distinct position instead of racing for the same one.
     # The same lookup also tags the position as bot-owned for bot-only
-    # drawdown accounting (one-trade-per-symbol guarantees it's ours), and
-    # registers TP1 with the trailing manager if the broker dropped it.
-    # Runs in the background — TradingView times out webhook deliveries
-    # after just a few seconds, so this must never block the response.
+    # drawdown accounting, and registers TP1 with the trailing manager if
+    # the broker dropped it. Runs in the background — TradingView times
+    # out webhook deliveries after just a few seconds, so this must never
+    # block the response.
     threading.Thread(
         target=_link_trade_position,
-        args=(client, trade_id, ticker, action, tp1 or 0),
+        args=(client, trade_id, ticker, action, entry, tp1 or 0),
         daemon=True,
         name="link-trade-position",
     ).start()
