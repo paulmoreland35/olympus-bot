@@ -1008,7 +1008,15 @@ def webhook():
             tp1    = float(data.get("tp",    0))
 
     elif raw_body:
-        # Format C — plain text Olympus message (alert message box not yet updated to JSON)
+        # Format C — plain text Olympus message (alert message box not yet
+        # updated to JSON). There's no JSON body to carry a "secret" field
+        # here, so the secret must come from the URL instead — append
+        # ?secret=... to the webhook URL in TradingView's alert dialog.
+        if WEBHOOK_SECRET and request.args.get("secret") != WEBHOOK_SECRET:
+            logger.warning("Webhook secret mismatch (plain text) — rejected.")
+            _record_webhook(summary="rejected: bad/missing secret", count=False)
+            return jsonify({"error": "Unauthorized"}), 401
+
         logger.info(f"Webhook received (plain text): {raw_body}")
         try:
             parsed = parse_olympus_message(raw_body)
