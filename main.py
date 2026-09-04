@@ -161,8 +161,9 @@ MAX_DAILY_DRAWDOWN_PCT = float(os.getenv("MAX_DAILY_DRAWDOWN_PCT", "0.07"))
 MAX_OPEN_TRADES        = int(os.getenv("MAX_OPEN_TRADES", "3"))
 
 # How often the trailing loop polls open positions (seconds).
-# 10s is a good balance — responsive without hammering the API.
-TRAILING_POLL_SEC = int(os.getenv("TRAILING_POLL_SEC", "10"))
+# Lowered to 5s so fast index scalps (40-pt targets that resolve in seconds)
+# are actually caught at their breakeven trigger before they hit TP/SL.
+TRAILING_POLL_SEC = int(os.getenv("TRAILING_POLL_SEC", "5"))
 
 # Master pause switch — set TRADING_PAUSED=true to stop new trades from
 # both the webhook and the autonomous scanner without touching TradingView
@@ -171,6 +172,13 @@ TRAILING_POLL_SEC = int(os.getenv("TRAILING_POLL_SEC", "10"))
 TRADING_PAUSED = os.getenv("TRADING_PAUSED", "false").strip().lower() == "true"
 if TRADING_PAUSED:
     logger.warning("[Pause] TRADING_PAUSED is set — no new trades will be placed.")
+
+# Direction filter — set LONGS_ONLY=true to ignore every SELL signal (both
+# webhook and scanner). Shorts systematically underperform longs on trending
+# indices; this drops them entirely. Per-deployment via env.
+LONGS_ONLY = os.getenv("LONGS_ONLY", "false").strip().lower() == "true"
+if LONGS_ONLY:
+    logger.warning("[Filter] LONGS_ONLY is set — SELL signals will be ignored.")
 
 # ------------------------------------------------------------------
 # Trailing stop manager + trade log (singletons)
@@ -428,6 +436,18 @@ def _trailing_loop():
 
             positions    = client.get_open_positions()
             current_ids  = {p["id"] for p in positions}
+
+            # Enrich each position with a LIVE market price so the trailing
+            # manager triggers on the real price, not one inferred from P&L +
+            # an assumed contract size. Fail-safe: if the quote fetch fails,
+            # leave it unset and the manager falls back to its P&L derivation.
+            for p in positions:
+                try:
+                    px = client.get_quote(p.get("name", ""))
+                    if px and px > 0:
+                        p["currentPrice"] = px
+                except Exception:
+                    pass
 
             # ---- Detect closed positions ----
             for pid, last_pos in prev_pos_map.items():
@@ -1045,6 +1065,14 @@ def webhook():
         return jsonify({"error": "Missing ticker"}), 400
     if entry <= 0:
         return jsonify({"error": "Invalid entry price"}), 400
+
+    # 4a. Direction filter — LONGS_ONLY drops SELL signals (shorts underperform
+    #     on trending indices). Not forwarded to partners either.
+    if LONGS_ONLY and action == "sell":
+        logger.info(f"[Filter] LONGS_ONLY set — ignoring SELL {ticker}.")
+        _record_webhook(summary=f"blocked: LONGS_ONLY (SELL {ticker})", count=False)
+        return jsonify({"status": "blocked",
+                        "reason": "LONGS_ONLY is set — SELL signals are ignored."}), 200
 
     # Alert accepted — auth passed and message parsed into a valid signal.
     # count=False: this request was already counted on arrival above.

@@ -170,6 +170,53 @@ class TradeLockerClient:
     # Instruments
     # ------------------------------------------------------------------
 
+    def get_quote(self, symbol: str) -> Optional[float]:
+        """
+        Return the live mid price for `symbol` from TradeLocker quotes, so the
+        trailing manager can trigger on the REAL market price instead of one
+        inferred from unrealised P&L (which depends on an assumed contract
+        size). Instrument routes are cached. Returns None on any failure —
+        the caller must fall back to its own price derivation.
+        """
+        try:
+            sym = symbol.upper()
+            if not hasattr(self, "_route_cache"):
+                self._route_cache = {}
+            if sym not in self._route_cache:
+                url = f"{self.base_url}/trade/accounts/{self.account_id}/instruments"
+                resp = self._get(url, timeout=15)
+                resp.raise_for_status()
+                self._route_cache[sym] = (None, None)
+                for inst in resp.json().get("d", {}).get("instruments", []):
+                    if str(inst.get("name", "")).upper() == sym:
+                        tid = int(inst.get("tradableInstrumentId", 0))
+                        info_route = None
+                        for r in inst.get("routes", []):
+                            if isinstance(r, dict) and r.get("type") == "INFO":
+                                info_route = int(r["id"])
+                                break
+                        self._route_cache[sym] = (tid, info_route)
+                        break
+            tid, info_route = self._route_cache.get(sym, (None, None))
+            if not tid or info_route is None:
+                return None
+            q = self._get(
+                f"{self.base_url}/trade/quotes?routeId={info_route}&tradableInstrumentId={tid}",
+                timeout=10,
+            )
+            if q.status_code != 200:
+                return None
+            d = q.json().get("d", {})
+            bid = float(d.get("bp") or d.get("bid") or 0)
+            ask = float(d.get("ap") or d.get("ask") or 0)
+            if bid > 0 and ask > 0:
+                return (bid + ask) / 2.0
+            last = float(d.get("last") or d.get("lp") or d.get("mp") or 0)
+            return last if last > 0 else None
+        except Exception as e:
+            logger.debug(f"[Quote] get_quote failed for {symbol}: {e}")
+            return None
+
     def get_instrument_id(self, symbol: str) -> tuple[int, int, int]:
         """
         Look up instrument details by symbol name.

@@ -140,8 +140,12 @@ class TrailingStopManager:
         Derive current market price from position data.
         Tries direct field first, then falls back to PnL calculation.
         """
-        # Some brokers supply current price directly
-        for field in ("currentPrice", "markPrice", "livePrice", "price"):
+        # Prefer an unambiguous live/mark price if supplied (the trailing loop
+        # injects "currentPrice" from a live broker quote). Do NOT trust a bare
+        # "price" field — on several brokers that is the ENTRY price, which
+        # would peg current_price to entry and stop the trigger from ever
+        # firing. When none is present, fall through to the P&L derivation.
+        for field in ("currentPrice", "markPrice", "livePrice"):
             val = pos.get(field)
             if val and float(val) > 0:
                 return float(val)
