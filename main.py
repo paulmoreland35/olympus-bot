@@ -871,6 +871,30 @@ def instruments():
 
     return jsonify({"count": len(names), "instruments": names}), 200
 
+@app.route("/quote-test", methods=["GET"])
+def quote_test():
+    """Diagnostic: confirm live quotes work (the linchpin of trailing). Secret-protected."""
+    secret = request.args.get("secret")
+    if WEBHOOK_SECRET and secret != WEBHOOK_SECRET:
+        return jsonify({"error": "Unauthorized"}), 401
+    symbols = (request.args.get("symbols") or "NAS100,US30,XAUUSD").split(",")
+    out = {}
+    try:
+        client = TradeLockerClient(
+            base_url=TL_BASE_URL, email=TL_EMAIL,
+            password=TL_PASSWORD, server=TL_SERVER,
+        )
+        client.authenticate()
+        for s in symbols:
+            s = s.strip()
+            if not s:
+                continue
+            px = client.get_quote(s)
+            out[s] = px
+    except Exception as e:
+        out["error"] = str(e)
+    return jsonify(out), 200
+
 @app.route("/reset-drawdown", methods=["POST", "GET"])
 def reset_drawdown():
     """
