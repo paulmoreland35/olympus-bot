@@ -123,6 +123,16 @@ def _insights(label: str, d: dict) -> list[str]:
     if dd:
         notes.append(f"&#9940; {label}: trading HALTED today — daily drawdown limit hit.")
 
+    # Worst-losing scanner (needs enough tagged trades to be meaningful)
+    by_source = d.get("by_source") or {}
+    ranked = sorted(by_source.items(), key=lambda kv: kv[1].get("net_pnl", 0))
+    if ranked:
+        worst_src, worst = ranked[0]
+        if worst.get("net_pnl", 0) < 0 and worst.get("trades", 0) >= 5:
+            notes.append(f"&#128201; {label}: worst scanner is '{worst_src}' — "
+                         f"{worst.get('win_rate_pct', 0)}% win over {worst['trades']} trades, "
+                         f"net {_fmt_money(worst.get('net_pnl', 0))}. Consider cutting it.")
+
     # TradingView alert / webhook health
     wh = d.get("webhooks", {})
     last_wh = wh.get("last_received_utc")
@@ -198,6 +208,23 @@ def _account_section(label: str, d: dict) -> str:
                      f"<td>{c.get('move')}</td>"
                      f"<td style='color:{color}'><b>{c.get('outcome')}</b></td>"
                      f"<td>{c.get('reason', '')}</td></tr>")
+        html += "</table>"
+
+    by_source = d.get("by_source") or {}
+    if by_source:
+        # Sort by net P&L ascending so the biggest loser is at the top.
+        ranked = sorted(by_source.items(), key=lambda kv: kv[1].get("net_pnl", 0))
+        html += "<h4 style='margin:12px 0 4px'>By scanner (source)</h4><table cellpadding='5' " \
+                "style='border-collapse:collapse;font-size:13px;border:1px solid #ddd'>" \
+                "<tr style='background:#f4f4f4'><th>Scanner</th><th>Trades</th><th>W/L</th>" \
+                "<th>Win%</th><th>Net P&amp;L</th></tr>"
+        for src, s in ranked:
+            net = s.get("net_pnl", 0)
+            color = "#0a0" if net >= 0 else "#c00"
+            html += (f"<tr><td><b>{src}</b></td><td>{s.get('trades', 0)}</td>"
+                     f"<td>{s.get('wins', 0)}W / {s.get('losses', 0)}L</td>"
+                     f"<td>{s.get('win_rate_pct', 0)}%</td>"
+                     f"<td style='color:{color}'><b>{_fmt_money(net)}</b></td></tr>")
         html += "</table>"
 
     if opens:

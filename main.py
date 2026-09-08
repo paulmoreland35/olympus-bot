@@ -825,6 +825,26 @@ def report():
     except Exception:
         pass
 
+    # --- Per-scanner (source) win/loss, for the daily report ---
+    try:
+        closed = trade_log.get_recent(1000)
+        by_src = {}
+        for r in closed:
+            by_src.setdefault(r.get("source") or "unknown", []).append(r)
+        src_out = {}
+        for src, rows in by_src.items():
+            wins = [r for r in rows if r.get("outcome") == "win"]
+            src_out[src] = {
+                "trades": len(rows),
+                "wins": len(wins),
+                "losses": len([r for r in rows if r.get("outcome") == "loss"]),
+                "win_rate_pct": round(100 * len(wins) / len(rows), 1) if rows else 0,
+                "net_pnl": round(sum(float(r.get("pnl") or 0) for r in rows), 2),
+            }
+        out["by_source"] = src_out
+    except Exception:
+        out["by_source"] = {}
+
     return jsonify(out), 200
 
 @app.route("/scalp-backtest", methods=["GET"])
