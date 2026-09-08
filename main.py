@@ -440,9 +440,23 @@ def _trailing_loop():
     """
     client       = None
     prev_pos_map: dict[str, dict] = {}   # position_id → last known position data
+    _last_reconcile = 0.0                 # epoch secs of last orphan reconcile
 
     while True:
         try:
+            # Periodically reconcile orphaned trade-log entries against broker
+            # history (every 5 min). Live position-linking can fail under rate
+            # limits, leaving entries stuck "open" with no outcome — this closes
+            # them out from broker truth so per-scanner P&L actually populates.
+            if client is not None and (time.time() - _last_reconcile) > 300:
+                try:
+                    res = trade_log.reconcile_orphans(client.get_closed_trades())
+                    if res.get("matched"):
+                        logger.info(f"[Reconcile] Closed {len(res['matched'])} orphaned trades.")
+                except Exception as rec_err:
+                    logger.warning(f"[Reconcile] Failed: {rec_err}")
+                _last_reconcile = time.time()
+
             # (Re-)authenticate when client is missing
             if client is None:
                 if not TL_EMAIL or not TL_PASSWORD:
