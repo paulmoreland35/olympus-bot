@@ -1,0 +1,241 @@
+//@version=6
+// 1HOUSE Optimal Scanner [Moreland]
+// Recreation of the XAUUSD "Optimal Sell / Optimal Buy" scanner.
+// Signal = confirmed swing pivot + EMA cloud alignment.
+// SL = swing point (or ATR). Entry = confirmation close. TP1/2/3 = R multiples.
+// Pine v6 notes: no multi-line ternaries, no Unicode in strings, const alert messages.
+indicator("1HOUSE Optimal Scanner [Moreland]", shorttitle="Optimal Scanner", overlay=true, max_lines_count=500, max_labels_count=500)
+
+// =============================================================================
+// INPUTS
+// =============================================================================
+g1 = "EMA Cloud"
+emaFastLen = input.int(21, "EMA fast", group=g1, minval=2)
+emaSlowLen = input.int(50, "EMA slow", group=g1, minval=2)
+
+g2 = "Swing Structure"
+swLeft  = input.int(5, "Pivot left bars",  group=g2, minval=2, maxval=20)
+swRight = input.int(5, "Pivot right bars", group=g2, minval=2, maxval=20)
+
+g3 = "Risk"
+atrLen    = input.int(14,   "ATR length",              group=g3, minval=1)
+slAtrMult = input.float(1.0, "Fallback SL (ATR x)",     group=g3, minval=0.1, step=0.1)
+slBuffer  = input.float(0.1, "Swing SL buffer (ATR x)",  group=g3, minval=0.0, step=0.1)
+tp1R      = input.float(1.0, "TP1 (R multiple)",         group=g3, minval=0.1, step=0.1)
+tp2R      = input.float(2.0, "TP2 (R multiple)",         group=g3, minval=0.1, step=0.1)
+tp3R      = input.float(3.0, "TP3 (R multiple)",         group=g3, minval=0.1, step=0.1)
+
+g4 = "Display"
+showCloud  = input.bool(true, "Show EMA cloud",         group=g4)
+showLabels = input.bool(true, "Show trade labels",      group=g4)
+showLines  = input.bool(true, "Show SL / TP lines",     group=g4)
+lineExtend = input.int(20, "SL/TP line length (bars)",  group=g4, minval=5, maxval=100)
+
+// =============================================================================
+// EMA CLOUD
+// =============================================================================
+emaFast = ta.ema(close, emaFastLen)
+emaSlow = ta.ema(close, emaSlowLen)
+bullCloud = emaFast > emaSlow
+bearCloud = emaFast < emaSlow
+
+pF = plot(showCloud ? emaFast : na, "EMA Fast", color=color.new(color.aqua, 0), linewidth=2)
+pS = plot(showCloud ? emaSlow : na, "EMA Slow", color=color.new(color.orange, 0), linewidth=2)
+cloudColor = bullCloud ? color.new(color.lime, 90) : color.new(color.red, 90)
+fill(pF, pS, color=cloudColor, title="EMA Cloud")
+
+// =============================================================================
+// SWING PIVOTS
+// =============================================================================
+atr = ta.atr(atrLen)
+
+ph = ta.pivothigh(high, swLeft, swRight)
+pl = ta.pivotlow(low, swLeft, swRight)
+
+var float swingHigh = na
+var float swingLow  = na
+
+if not na(ph)
+    swingHigh := ph
+if not na(pl)
+    swingLow := pl
+
+// =============================================================================
+// SIGNAL CONDITIONS
+// A confirmed pivot high inside a bearish EMA cloud, with price closing back
+// under the fast EMA, marks the "Optimal Sell". Mirrored for buys.
+// =============================================================================
+sellSig = not na(ph) and bearCloud and close < emaFast
+buySig  = not na(pl) and bullCloud and close > emaFast
+
+// =============================================================================
+// TRADE LEVELS
+// =============================================================================
+sellEntry = close
+buyEntry  = close
+
+sellSL = not na(swingHigh) ? swingHigh + atr * slBuffer : sellEntry + atr * slAtrMult
+buySL  = not na(swingLow)  ? swingLow  - atr * slBuffer : buyEntry  - atr * slAtrMult
+
+sellR = sellSL - sellEntry
+buyR  = buyEntry - buySL
+
+sellTp1 = sellEntry - sellR * tp1R
+sellTp2 = sellEntry - sellR * tp2R
+sellTp3 = sellEntry - sellR * tp3R
+
+buyTp1 = buyEntry + buyR * tp1R
+buyTp2 = buyEntry + buyR * tp2R
+buyTp3 = buyEntry + buyR * tp3R
+
+// =============================================================================
+// TRADE TRACKING (fires TP1/TP2/TP3/SL "hit" events for the active trade)
+// =============================================================================
+var float trkSellSL     = na
+var float trkSellTp1    = na
+var float trkSellTp2    = na
+var float trkSellTp3    = na
+var bool  trkInSell      = false
+var bool  trkSellTp1Hit = false
+var bool  trkSellTp2Hit = false
+
+var float trkBuySL      = na
+var float trkBuyTp1     = na
+var float trkBuyTp2     = na
+var float trkBuyTp3     = na
+var bool  trkInBuy       = false
+var bool  trkBuyTp1Hit  = false
+var bool  trkBuyTp2Hit  = false
+
+var float hitPrice = na
+
+aTp1 = false
+aTp2 = false
+aTp3 = false
+aSL  = false
+
+if trkInSell
+    if not na(trkSellTp3) and low <= trkSellTp3
+        aTp3 := true
+        hitPrice := trkSellTp3
+        trkInSell := false
+    else if not na(trkSellTp2) and low <= trkSellTp2 and not trkSellTp2Hit
+        aTp2 := true
+        hitPrice := trkSellTp2
+        trkSellTp2Hit := true
+    else if not na(trkSellTp1) and low <= trkSellTp1 and not trkSellTp1Hit
+        aTp1 := true
+        hitPrice := trkSellTp1
+        trkSellTp1Hit := true
+    else if not na(trkSellSL) and high >= trkSellSL
+        aSL := true
+        hitPrice := trkSellSL
+        trkInSell := false
+
+if trkInBuy
+    if not na(trkBuyTp3) and high >= trkBuyTp3
+        aTp3 := true
+        hitPrice := trkBuyTp3
+        trkInBuy := false
+    else if not na(trkBuyTp2) and high >= trkBuyTp2 and not trkBuyTp2Hit
+        aTp2 := true
+        hitPrice := trkBuyTp2
+        trkBuyTp2Hit := true
+    else if not na(trkBuyTp1) and high >= trkBuyTp1 and not trkBuyTp1Hit
+        aTp1 := true
+        hitPrice := trkBuyTp1
+        trkBuyTp1Hit := true
+    else if not na(trkBuySL) and low <= trkBuySL
+        aSL := true
+        hitPrice := trkBuySL
+        trkInBuy := false
+
+if sellSig
+    trkInSell     := true
+    trkSellSL     := sellSL
+    trkSellTp1    := sellTp1
+    trkSellTp2    := sellTp2
+    trkSellTp3    := sellTp3
+    trkSellTp1Hit := false
+    trkSellTp2Hit := false
+    trkInBuy      := false
+
+if buySig
+    trkInBuy     := true
+    trkBuySL     := buySL
+    trkBuyTp1    := buyTp1
+    trkBuyTp2    := buyTp2
+    trkBuyTp3    := buyTp3
+    trkBuyTp1Hit := false
+    trkBuyTp2Hit := false
+    trkInSell    := false
+
+// =============================================================================
+// VISUALIZATIONS
+// =============================================================================
+plotshape(sellSig, "Optimal Sell", shape.triangledown, location.abovebar, color.red,  size=size.normal)
+plotshape(buySig,  "Optimal Buy",  shape.triangleup,   location.belowbar, color.lime, size=size.normal)
+
+if aTp1
+    label.new(bar_index, hitPrice, text="TP1 HIT", style=label.style_label_left, color=color.new(color.lime, 10), textcolor=color.white, size=size.small)
+if aTp2
+    label.new(bar_index, hitPrice, text="TP2 HIT", style=label.style_label_left, color=color.new(color.lime, 10), textcolor=color.white, size=size.small)
+if aTp3
+    label.new(bar_index, hitPrice, text="TP3 HIT", style=label.style_label_left, color=color.new(color.lime, 10), textcolor=color.white, size=size.small)
+if aSL
+    label.new(bar_index, hitPrice, text="SL HIT", style=label.style_label_left, color=color.new(color.red, 10), textcolor=color.white, size=size.small)
+
+if sellSig and showLabels
+    label.new(bar_index, high + atr * 0.5, text="SELL " + syminfo.ticker + "\nEntry: " + str.tostring(sellEntry, "#.#####") + "\nSL: " + str.tostring(sellSL, "#.#####") + "\nTP1: " + str.tostring(sellTp1, "#.#####") + "\nTP2: " + str.tostring(sellTp2, "#.#####") + "\nTP3: " + str.tostring(sellTp3, "#.#####"), style=label.style_label_down, color=color.new(color.red, 10), textcolor=color.white, size=size.normal)
+
+if buySig and showLabels
+    label.new(bar_index, low - atr * 0.5, text="BUY " + syminfo.ticker + "\nEntry: " + str.tostring(buyEntry, "#.#####") + "\nSL: " + str.tostring(buySL, "#.#####") + "\nTP1: " + str.tostring(buyTp1, "#.#####") + "\nTP2: " + str.tostring(buyTp2, "#.#####") + "\nTP3: " + str.tostring(buyTp3, "#.#####"), style=label.style_label_up, color=color.new(color.lime, 10), textcolor=color.white, size=size.normal)
+
+if sellSig and showLines
+    line.new(bar_index, sellSL,  bar_index + lineExtend, sellSL,  color=color.red,   width=2, style=line.style_solid)
+    line.new(bar_index, sellTp1, bar_index + lineExtend, sellTp1, color=color.lime,  width=1, style=line.style_dashed)
+    line.new(bar_index, sellTp2, bar_index + lineExtend, sellTp2, color=color.lime,  width=1, style=line.style_dashed)
+    line.new(bar_index, sellTp3, bar_index + lineExtend, sellTp3, color=color.lime,  width=2, style=line.style_solid)
+    line.new(bar_index, sellEntry, bar_index + lineExtend, sellEntry, color=color.white, width=1, style=line.style_solid)
+
+if buySig and showLines
+    line.new(bar_index, buySL,  bar_index + lineExtend, buySL,  color=color.red,   width=2, style=line.style_solid)
+    line.new(bar_index, buyTp1, bar_index + lineExtend, buyTp1, color=color.lime,  width=1, style=line.style_dashed)
+    line.new(bar_index, buyTp2, bar_index + lineExtend, buyTp2, color=color.lime,  width=1, style=line.style_dashed)
+    line.new(bar_index, buyTp3, bar_index + lineExtend, buyTp3, color=color.lime,  width=2, style=line.style_solid)
+    line.new(bar_index, buyEntry, bar_index + lineExtend, buyEntry, color=color.white, width=1, style=line.style_solid)
+
+// =============================================================================
+// ALERTS
+// alertcondition() messages are compile-time constants in Pine, so they can't
+// carry the live entry/SL/TP prices the webhook bot needs. Kept below only so
+// each condition still shows up in TradingView's alert-condition picker.
+// The actual bot integration uses alert(), matching TradingView's "Any alert()
+// function call" trigger (see README "Set up TradingView alerts") and the
+// Olympus message format the bot's parser.py expects:
+//   BUY/SELL TICKER | TF | ENTRY: x | SL: x | TP1: x | TP2: x | TP3: x
+// =============================================================================
+alertcondition(sellSig, "Optimal Sell", "Optimal Sell signal - Optimal Scanner")
+alertcondition(buySig,  "Optimal Buy",  "Optimal Buy signal - Optimal Scanner")
+alertcondition(aTp1, "TP 1 Hit",        "TP 1 hit - Optimal Scanner")
+alertcondition(aTp2, "TP 2 Hit",        "TP 2 hit - Optimal Scanner")
+alertcondition(aTp3, "TP 3 Hit",        "TP 3 hit - Optimal Scanner")
+alertcondition(aSL,  "Stop Loss Hit",   "Stop loss hit - Optimal Scanner")
+
+if sellSig
+    alert(" SELL " + syminfo.ticker + " | " + timeframe.period + " | ENTRY: " + str.tostring(sellEntry, "#.#####") + " | SL: " + str.tostring(sellSL, "#.#####") + " | TP1: " + str.tostring(sellTp1, "#.#####") + " | TP2: " + str.tostring(sellTp2, "#.#####") + " | TP3: " + str.tostring(sellTp3, "#.#####"), alert.freq_once_per_bar_close)
+
+if buySig
+    alert(" BUY " + syminfo.ticker + " | " + timeframe.period + " | ENTRY: " + str.tostring(buyEntry, "#.#####") + " | SL: " + str.tostring(buySL, "#.#####") + " | TP1: " + str.tostring(buyTp1, "#.#####") + " | TP2: " + str.tostring(buyTp2, "#.#####") + " | TP3: " + str.tostring(buyTp3, "#.#####"), alert.freq_once_per_bar_close)
+
+if aTp1
+    alert(" TP1 HIT " + syminfo.ticker + " | price: " + str.tostring(hitPrice, "#.#####") + " - Optimal Scanner", alert.freq_once_per_bar_close)
+
+if aTp2
+    alert(" TP2 HIT " + syminfo.ticker + " | price: " + str.tostring(hitPrice, "#.#####") + " - Optimal Scanner", alert.freq_once_per_bar_close)
+
+if aTp3
+    alert(" TP3 HIT " + syminfo.ticker + " | price: " + str.tostring(hitPrice, "#.#####") + " - Optimal Scanner", alert.freq_once_per_bar_close)
+
+if aSL
+    alert(" STOP LOSS HIT " + syminfo.ticker + " | price: " + str.tostring(hitPrice, "#.#####") + " - Optimal Scanner", alert.freq_once_per_bar_close)
