@@ -377,15 +377,15 @@ def _reconcile_and_cleanup(client) -> dict:
     truth, independent of this log's own bookkeeping) — used by both the
     /reconcile-trades endpoint and the trailing loop's periodic auto-run.
 
-    Anything still unmatched against closed history is checked against
-    CURRENT open positions too before giving up on it — a trade genuinely
-    still open (just slow to sync) must never be marked unlinked. Only a
-    trade matching neither open nor closed broker state is closed out as
-    "unlinked": that combination means the order never actually resulted
-    in a real position at all (e.g. an IOC order the broker silently
-    cancelled), and no amount of further reconciliation will ever find it
-    — without this check those would sit "open" forever, since they can
-    never appear in closed-trade history either.
+    Anything still unmatched against closed history is NOT auto-closed as
+    a phantom, even if it's also absent from current open positions — that
+    combination was assumed to mean "never filled", but LIVVFX/TradeLocker
+    has been observed returning an empty positions list while the market
+    is simply closed, for real positions that are just frozen until it
+    reopens. Auto-closing on that basis already mis-marked 3 real open
+    trades once. These are only surfaced as "no_fill_candidates" for a
+    human to check against the broker's own app before ever calling
+    mark_unlinked on them manually via /mark-unlinked.
     """
     closed = client.get_closed_trades()
     open_positions = client.get_open_positions()
@@ -395,13 +395,12 @@ def _reconcile_and_cleanup(client) -> dict:
     open_ticker_sides = {
         (str(p.get("name", "")).upper(), p.get("side")) for p in open_positions
     }
-    given_up = []
+    no_fill_candidates = []
     for trade_id in result["unmatched"]:
         ts = trade_log.get_ticker_side(trade_id)
         if ts is not None and ts not in open_ticker_sides:
-            trade_log.mark_unlinked(trade_id)
-            given_up.append(trade_id)
-    result["given_up_no_fill"] = given_up
+            no_fill_candidates.append(trade_id)
+    result["no_fill_candidates"] = no_fill_candidates
     return result
 
 
@@ -483,19 +482,22 @@ def _trailing_loop():
             # history (every 5 min). Live position-linking can fail under rate
             # limits, leaving entries stuck "open" with no outcome — this closes
             # them out from broker truth so per-scanner P&L actually populates.
-            # Also catches orders that never actually filled at all (e.g. an
-            # IOC order silently cancelled by the broker) — those can never
-            # appear in closed-trade history either, so reconcile_orphans alone
-            # would retry them forever; _reconcile_and_cleanup cross-checks
-            # against current open positions and gives up on genuine no-fills.
+            # Trades absent from both open and closed broker state are only
+            # logged as no-fill candidates, never auto-closed — LIVVFX has been
+            # observed returning an empty positions list while the market is
+            # simply closed, which mis-marked 3 real open trades as phantom
+            # when this used to auto-close them. Use /mark-unlinked manually,
+            # after checking the broker's own app, if one is confirmed dead.
             if client is not None and (time.time() - _last_reconcile) > 300:
                 try:
                     res = _reconcile_and_cleanup(client)
                     if res.get("matched"):
                         logger.info(f"[Reconcile] Closed {len(res['matched'])} orphaned trades.")
-                    if res.get("given_up_no_fill"):
-                        logger.info(f"[Reconcile] Gave up on {len(res['given_up_no_fill'])} "
-                                    f"trades that never filled (no matching open or closed position).")
+                    if res.get("no_fill_candidates"):
+                        logger.info(f"[Reconcile] {len(res['no_fill_candidates'])} trade(s) look "
+                                    f"like no-fills (no matching open or closed position) — NOT "
+                                    f"auto-closed, check broker app + /mark-unlinked if confirmed: "
+                                    f"{res['no_fill_candidates']}")
                 except Exception as rec_err:
                     logger.warning(f"[Reconcile] Failed: {rec_err}")
                 _last_reconcile = time.time()
@@ -1084,13 +1086,13 @@ def reconcile_trades():
     TradeLocker's own order history — broker truth, independent of this
     log's own bookkeeping. Secret-protected since it writes to the log.
 
-    Anything still unmatched against closed history is checked against
-    CURRENT open positions too before giving up on it — a trade genuinely
-    still open (just slow to sync) must never be marked unlinked. Only a
-    trade matching neither open nor closed broker state is closed out as
-    "unlinked": that combination means the order never actually resulted
-    in a real position at all (e.g. an IOC order the broker silently
-    cancelled), and no amount of further reconciliation will ever find it.
+    Anything still unmatched against closed history AND absent from
+    current open positions is surfaced as a "no_fill_candidates" entry,
+    NOT auto-closed — that combination was previously assumed to mean the
+    order never filled, but LIVVFX/TradeLocker has been observed returning
+    an empty positions list while the market is simply closed, for real
+    positions that are just frozen until it reopens. Check the broker's
+    own app before closing anything out via /mark-unlinked.
     """
     secret = request.args.get("secret") or (request.get_json(silent=True) or {}).get("secret")
     if WEBHOOK_SECRET and secret != WEBHOOK_SECRET:
@@ -1107,10 +1109,46 @@ def reconcile_trades():
         return jsonify({"error": "Broker auth/history fetch failed", "detail": str(e)}), 502
 
     logger.info(f"[TradeLog] Reconciled orphans — matched {len(result['matched'])}, "
-                f"given up (never filled) {len(result['given_up_no_fill'])}, "
-                f"still unmatched (possibly still open) "
-                f"{len(result['unmatched']) - len(result['given_up_no_fill'])}.")
+                f"no-fill candidates (NOT auto-closed, check broker app first) "
+                f"{len(result['no_fill_candidates'])}.")
     return jsonify(result), 200
+
+@app.route("/mark-unlinked", methods=["POST"])
+def mark_unlinked_endpoint():
+    """
+    Manually close out one specific trade_id as "unlinked" (never actually
+    filled) — only ever call this after checking the broker's own app
+    directly and confirming no such position exists there, open or
+    otherwise. This never touches the broker itself, only this log's
+    bookkeeping. Secret-protected.
+    """
+    body = request.get_json(silent=True) or {}
+    secret = request.args.get("secret") or body.get("secret")
+    if WEBHOOK_SECRET and secret != WEBHOOK_SECRET:
+        return jsonify({"error": "Unauthorized"}), 401
+    trade_id = body.get("trade_id", "")
+    if not trade_id:
+        return jsonify({"error": "trade_id required"}), 400
+    trade_log.mark_unlinked(trade_id)
+    return jsonify({"status": "marked_unlinked", "trade_id": trade_id}), 200
+
+@app.route("/reopen-trade", methods=["POST"])
+def reopen_trade_endpoint():
+    """
+    Undo a /mark-unlinked (or auto-reconcile-era) call on a specific
+    trade_id, reopening it. Only succeeds if that trade's exit_reason is
+    "unlinked" — never reopens a real broker-confirmed exit. Secret-protected.
+    """
+    body = request.get_json(silent=True) or {}
+    secret = request.args.get("secret") or body.get("secret")
+    if WEBHOOK_SECRET and secret != WEBHOOK_SECRET:
+        return jsonify({"error": "Unauthorized"}), 401
+    trade_id = body.get("trade_id", "")
+    if not trade_id:
+        return jsonify({"error": "trade_id required"}), 400
+    ok = trade_log.reopen(trade_id)
+    return jsonify({"status": "reopened" if ok else "not_found_or_not_unlinked",
+                     "trade_id": trade_id}), (200 if ok else 404)
 
 @app.route("/send-report", methods=["POST", "GET"])
 def send_report():

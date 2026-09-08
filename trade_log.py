@@ -252,6 +252,27 @@ class TradeLog:
                     self._save()
                     return
 
+    def reopen(self, trade_id: str) -> bool:
+        """
+        Undo a mark_unlinked() call — only ever reverses a trade this
+        exact bookkeeping action closed (exit_reason == "unlinked"), never
+        a real broker-confirmed exit. Needed because "0 open positions and
+        0 matching closed history" is not reliable proof a trade never
+        filled: at least one broker (LIVVFX/TradeLocker) has been observed
+        returning an empty positions list while the underlying market is
+        closed, even for real positions that are simply frozen until it
+        reopens. Returns True if a matching unlinked record was reopened.
+        """
+        with self._lock:
+            for t in self._trades:
+                if t["id"] == trade_id and t["exit_reason"] == "unlinked":
+                    t["closed_at"]   = None
+                    t["outcome"]     = None
+                    t["exit_reason"] = None
+                    self._save()
+                    return True
+        return False
+
     def log_exit(
         self,
         position_id:  str,
