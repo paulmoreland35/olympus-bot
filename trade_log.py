@@ -80,6 +80,7 @@ class TradeLog:
         tp1:      float,
         balance:  float,
         order_id: str = "",
+        source:   str = "unknown",
     ) -> str:
         """Record a new trade entry.  Returns the trade ID."""
         now = datetime.now(timezone.utc)
@@ -96,6 +97,7 @@ class TradeLog:
             "id":               trade_id,
             "position_id":      None,
             "order_id":         order_id,
+            "source":           source or "unknown",
             "ticker":           ticker.upper(),
             "side":             side.lower(),
             "lots":             lots,

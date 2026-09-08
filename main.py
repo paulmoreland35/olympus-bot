@@ -154,6 +154,33 @@ def _lookup_named_points_override(raw_body: str, data):
             return sl_pts, tp_pts, name
     return None
 
+
+def _detect_source(raw_body, data):
+    """
+    Best-effort indicator/scanner name for per-source P&L attribution.
+    Priority: explicit "source" field in JSON  ->  the indicator name that
+    prefixes the raw alert text (everything before the first BUY/SELL)  ->
+    "JSON/manual" for source-less structured alerts  ->  "unknown".
+    Add "source":"<name>" to a TradingView alert's JSON for exact tagging.
+    """
+    text = ""
+    if isinstance(data, dict):
+        if data.get("source"):
+            return str(data["source"]).strip()[:40] or "unknown"
+        if data.get("raw"):
+            text = str(data.get("raw"))
+    if not text:
+        text = raw_body or ""
+    text = text.strip()
+    if not text:
+        return "JSON/manual"
+    # Indicator name = the text before the first BUY/SELL keyword,
+    # with emojis/punctuation stripped.
+    head = re.split(r'\b(?:BUY|SELL)\b', text, flags=re.IGNORECASE)[0]
+    head = re.sub(r'[^A-Za-z0-9 &]+', ' ', head)
+    head = re.sub(r'\s+', ' ', head).strip()
+    return head[:40] if head else "unknown"
+
 # Daily drawdown limit — bot stops taking new trades for the rest of the day
 # once account balance drops this % below the day's opening balance.
 # e.g. 0.07 = halt if down 7% on the day.
@@ -649,6 +676,46 @@ def trades_summary():
 def trades_open():
     """All currently open (not yet exited) trades."""
     return jsonify(trade_log.get_open_trades()), 200
+
+@app.route("/trades-by-source", methods=["GET"])
+def trades_by_source():
+    """
+    Win/loss and net P&L broken down by originating scanner/indicator, so you
+    can see exactly which signal source is winning or losing. Only counts
+    trades logged since source-tagging was added. ?limit=N caps how many
+    recent closed trades are considered (default 1000).
+    """
+    try:
+        limit = int(request.args.get("limit", "1000"))
+    except Exception:
+        limit = 1000
+    closed = trade_log.get_recent(limit)
+
+    def _agg(rows):
+        wins   = [r for r in rows if r.get("outcome") == "win"]
+        losses = [r for r in rows if r.get("outcome") == "loss"]
+        net    = sum(float(r.get("pnl") or 0) for r in rows)
+        return {
+            "trades":   len(rows),
+            "wins":     len(wins),
+            "losses":   len(losses),
+            "win_rate_pct": round(100 * len(wins) / len(rows), 1) if rows else 0,
+            "net_pnl":  round(net, 2),
+        }
+
+    by_source = {}
+    for r in closed:
+        src = r.get("source") or "unknown"
+        by_source.setdefault(src, []).append(r)
+
+    out = {"total_closed": len(closed), "by_source": {}}
+    for src, rows in sorted(by_source.items(), key=lambda kv: _agg(kv[1])["net_pnl"]):
+        agg = _agg(rows)
+        # also split each source by side
+        agg["buy"]  = _agg([r for r in rows if r.get("side") == "buy"])
+        agg["sell"] = _agg([r for r in rows if r.get("side") == "sell"])
+        out["by_source"][src] = agg
+    return jsonify(out), 200
 
 # ------------------------------------------------------------------
 # Daily report endpoint — machine-readable snapshot for the report agent
@@ -1295,11 +1362,13 @@ def webhook():
     # registering here (before that lookup) would never actually be read.
     order_id = str(order.get("d", {}).get("orderId", "") if isinstance(order.get("d"), dict) else "")
 
-    # Log the entry
+    # Log the entry (tagged with the originating scanner/indicator so we can
+    # attribute win/loss per source — see /trades-by-source).
+    signal_source = _detect_source(raw_body, data)
     trade_id = trade_log.log_entry(
         ticker=ticker, side=action, lots=lots,
         entry=entry, sl=sl, tp1=tp1,
-        balance=balance, order_id=order_id,
+        balance=balance, order_id=order_id, source=signal_source,
     )
 
     # 10b. Link this log entry to its broker position ID so the trailing
