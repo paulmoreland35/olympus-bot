@@ -154,6 +154,33 @@ def _lookup_named_points_override(raw_body: str, data):
             return sl_pts, tp_pts, name
     return None
 
+
+def _detect_source(raw_body, data):
+    """
+    Best-effort indicator/scanner name for per-source P&L attribution.
+    Priority: explicit "source" field in JSON  ->  the indicator name that
+    prefixes the raw alert text (everything before the first BUY/SELL)  ->
+    "JSON/manual" for source-less structured alerts  ->  "unknown".
+    Add "source":"<name>" to a TradingView alert's JSON for exact tagging.
+    """
+    text = ""
+    if isinstance(data, dict):
+        if data.get("source"):
+            return str(data["source"]).strip()[:40] or "unknown"
+        if data.get("raw"):
+            text = str(data.get("raw"))
+    if not text:
+        text = raw_body or ""
+    text = text.strip()
+    if not text:
+        return "JSON/manual"
+    # Indicator name = the text before the first BUY/SELL keyword,
+    # with emojis/punctuation stripped.
+    head = re.split(r'\b(?:BUY|SELL)\b', text, flags=re.IGNORECASE)[0]
+    head = re.sub(r'[^A-Za-z0-9 &]+', ' ', head)
+    head = re.sub(r'\s+', ' ', head).strip()
+    return head[:40] if head else "unknown"
+
 # Daily drawdown limit — bot stops taking new trades for the rest of the day
 # once account balance drops this % below the day's opening balance.
 # e.g. 0.07 = halt if down 7% on the day.
@@ -161,8 +188,10 @@ MAX_DAILY_DRAWDOWN_PCT = float(os.getenv("MAX_DAILY_DRAWDOWN_PCT", "0.07"))
 MAX_OPEN_TRADES        = int(os.getenv("MAX_OPEN_TRADES", "3"))
 
 # How often the trailing loop polls open positions (seconds).
-# 10s is a good balance — responsive without hammering the API.
-TRAILING_POLL_SEC = int(os.getenv("TRAILING_POLL_SEC", "10"))
+# 8s balances catching fast scalps against TradeLocker's rate limit on the
+# /positions endpoint — 5s + the per-position quote calls was triggering 429s
+# that stopped the loop from reading positions at all (breaking trailing).
+TRAILING_POLL_SEC = int(os.getenv("TRAILING_POLL_SEC", "8"))
 
 # Master pause switch — set TRADING_PAUSED=true to stop new trades from
 # both the webhook and the autonomous scanner without touching TradingView
@@ -171,6 +200,13 @@ TRAILING_POLL_SEC = int(os.getenv("TRAILING_POLL_SEC", "10"))
 TRADING_PAUSED = os.getenv("TRADING_PAUSED", "false").strip().lower() == "true"
 if TRADING_PAUSED:
     logger.warning("[Pause] TRADING_PAUSED is set — no new trades will be placed.")
+
+# Direction filter — set LONGS_ONLY=true to ignore every SELL signal (both
+# webhook and scanner). Shorts systematically underperform longs on trending
+# indices; this drops them entirely. Per-deployment via env.
+LONGS_ONLY = os.getenv("LONGS_ONLY", "false").strip().lower() == "true"
+if LONGS_ONLY:
+    logger.warning("[Filter] LONGS_ONLY is set — SELL signals will be ignored.")
 
 # ------------------------------------------------------------------
 # Trailing stop manager + trade log (singletons)
@@ -303,7 +339,10 @@ def _link_trade_position(client, trade_id: str, ticker: str, action: str,
     distinct broker position instead of racing for the same one.
     """
     matched = False
-    for attempt in range(6):
+    # 3 attempts is enough for the position to appear; get_open_positions now
+    # absorbs 429s internally with backoff, so we no longer need a long burst
+    # of rapid lookups here (that burst was itself triggering the rate limit).
+    for attempt in range(3):
         try:
             candidates = [
                 p for p in client.get_open_positions()
@@ -401,9 +440,23 @@ def _trailing_loop():
     """
     client       = None
     prev_pos_map: dict[str, dict] = {}   # position_id → last known position data
+    _last_reconcile = 0.0                 # epoch secs of last orphan reconcile
 
     while True:
         try:
+            # Periodically reconcile orphaned trade-log entries against broker
+            # history (every 5 min). Live position-linking can fail under rate
+            # limits, leaving entries stuck "open" with no outcome — this closes
+            # them out from broker truth so per-scanner P&L actually populates.
+            if client is not None and (time.time() - _last_reconcile) > 300:
+                try:
+                    res = trade_log.reconcile_orphans(client.get_closed_trades())
+                    if res.get("matched"):
+                        logger.info(f"[Reconcile] Closed {len(res['matched'])} orphaned trades.")
+                except Exception as rec_err:
+                    logger.warning(f"[Reconcile] Failed: {rec_err}")
+                _last_reconcile = time.time()
+
             # (Re-)authenticate when client is missing
             if client is None:
                 if not TL_EMAIL or not TL_PASSWORD:
@@ -428,6 +481,18 @@ def _trailing_loop():
 
             positions    = client.get_open_positions()
             current_ids  = {p["id"] for p in positions}
+
+            # Enrich each position with a LIVE market price so the trailing
+            # manager triggers on the real price, not one inferred from P&L +
+            # an assumed contract size. Fail-safe: if the quote fetch fails,
+            # leave it unset and the manager falls back to its P&L derivation.
+            for p in positions:
+                try:
+                    px = client.get_quote(p.get("name", ""))
+                    if px and px > 0:
+                        p["currentPrice"] = px
+                except Exception:
+                    pass
 
             # ---- Detect closed positions ----
             for pid, last_pos in prev_pos_map.items():
@@ -626,6 +691,46 @@ def trades_open():
     """All currently open (not yet exited) trades."""
     return jsonify(trade_log.get_open_trades()), 200
 
+@app.route("/trades-by-source", methods=["GET"])
+def trades_by_source():
+    """
+    Win/loss and net P&L broken down by originating scanner/indicator, so you
+    can see exactly which signal source is winning or losing. Only counts
+    trades logged since source-tagging was added. ?limit=N caps how many
+    recent closed trades are considered (default 1000).
+    """
+    try:
+        limit = int(request.args.get("limit", "1000"))
+    except Exception:
+        limit = 1000
+    closed = trade_log.get_recent(limit)
+
+    def _agg(rows):
+        wins   = [r for r in rows if r.get("outcome") == "win"]
+        losses = [r for r in rows if r.get("outcome") == "loss"]
+        net    = sum(float(r.get("pnl") or 0) for r in rows)
+        return {
+            "trades":   len(rows),
+            "wins":     len(wins),
+            "losses":   len(losses),
+            "win_rate_pct": round(100 * len(wins) / len(rows), 1) if rows else 0,
+            "net_pnl":  round(net, 2),
+        }
+
+    by_source = {}
+    for r in closed:
+        src = r.get("source") or "unknown"
+        by_source.setdefault(src, []).append(r)
+
+    out = {"total_closed": len(closed), "by_source": {}}
+    for src, rows in sorted(by_source.items(), key=lambda kv: _agg(kv[1])["net_pnl"]):
+        agg = _agg(rows)
+        # also split each source by side
+        agg["buy"]  = _agg([r for r in rows if r.get("side") == "buy"])
+        agg["sell"] = _agg([r for r in rows if r.get("side") == "sell"])
+        out["by_source"][src] = agg
+    return jsonify(out), 200
+
 # ------------------------------------------------------------------
 # Daily report endpoint — machine-readable snapshot for the report agent
 # ------------------------------------------------------------------
@@ -733,6 +838,26 @@ def report():
         out["bot_logged_trades"] = trade_log.get_open_trades()
     except Exception:
         pass
+
+    # --- Per-scanner (source) win/loss, for the daily report ---
+    try:
+        closed = trade_log.get_recent(1000)
+        by_src = {}
+        for r in closed:
+            by_src.setdefault(r.get("source") or "unknown", []).append(r)
+        src_out = {}
+        for src, rows in by_src.items():
+            wins = [r for r in rows if r.get("outcome") == "win"]
+            src_out[src] = {
+                "trades": len(rows),
+                "wins": len(wins),
+                "losses": len([r for r in rows if r.get("outcome") == "loss"]),
+                "win_rate_pct": round(100 * len(wins) / len(rows), 1) if rows else 0,
+                "net_pnl": round(sum(float(r.get("pnl") or 0) for r in rows), 2),
+            }
+        out["by_source"] = src_out
+    except Exception:
+        out["by_source"] = {}
 
     return jsonify(out), 200
 
@@ -850,6 +975,30 @@ def instruments():
         names = [n for n in names if q in n.upper()]
 
     return jsonify({"count": len(names), "instruments": names}), 200
+
+@app.route("/quote-test", methods=["GET"])
+def quote_test():
+    """Diagnostic: confirm live quotes work (the linchpin of trailing). Secret-protected."""
+    secret = request.args.get("secret")
+    if WEBHOOK_SECRET and secret != WEBHOOK_SECRET:
+        return jsonify({"error": "Unauthorized"}), 401
+    symbols = (request.args.get("symbols") or "NAS100,US30,XAUUSD").split(",")
+    out = {}
+    try:
+        client = TradeLockerClient(
+            base_url=TL_BASE_URL, email=TL_EMAIL,
+            password=TL_PASSWORD, server=TL_SERVER,
+        )
+        client.authenticate()
+        for s in symbols:
+            s = s.strip()
+            if not s:
+                continue
+            px = client.get_quote(s)
+            out[s] = px
+    except Exception as e:
+        out["error"] = str(e)
+    return jsonify(out), 200
 
 @app.route("/reset-drawdown", methods=["POST", "GET"])
 def reset_drawdown():
@@ -1068,6 +1217,14 @@ def webhook():
     if entry <= 0:
         return jsonify({"error": "Invalid entry price"}), 400
 
+    # 4a. Direction filter — LONGS_ONLY drops SELL signals (shorts underperform
+    #     on trending indices). Not forwarded to partners either.
+    if LONGS_ONLY and action == "sell":
+        logger.info(f"[Filter] LONGS_ONLY set — ignoring SELL {ticker}.")
+        _record_webhook(summary=f"blocked: LONGS_ONLY (SELL {ticker})", count=False)
+        return jsonify({"status": "blocked",
+                        "reason": "LONGS_ONLY is set — SELL signals are ignored."}), 200
+
     # Alert accepted — auth passed and message parsed into a valid signal.
     # count=False: this request was already counted on arrival above.
     _record_webhook(summary=f"{action.upper()} {ticker}", accepted=True, count=False)
@@ -1261,11 +1418,13 @@ def webhook():
     # registering here (before that lookup) would never actually be read.
     order_id = str(order.get("d", {}).get("orderId", "") if isinstance(order.get("d"), dict) else "")
 
-    # Log the entry
+    # Log the entry (tagged with the originating scanner/indicator so we can
+    # attribute win/loss per source — see /trades-by-source).
+    signal_source = _detect_source(raw_body, data)
     trade_id = trade_log.log_entry(
         ticker=ticker, side=action, lots=lots,
         entry=entry, sl=sl, tp1=tp1,
-        balance=balance, order_id=order_id,
+        balance=balance, order_id=order_id, source=signal_source,
     )
 
     # 10b. Link this log entry to its broker position ID so the trailing

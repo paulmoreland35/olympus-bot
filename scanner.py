@@ -382,6 +382,10 @@ def run_scanner(client=None):
                     SCANNER_STATUS["last_signal"] = f"{action.upper()} {broker_symbol} @ {entry} (score {score}/8) — PAUSED, not placed"
                     continue
 
+                if os.getenv("LONGS_ONLY", "false").strip().lower() == "true" and action == "sell":
+                    logger.info(f"[Scanner] LONGS_ONLY — ignoring SELL {broker_symbol}.")
+                    continue
+
                 # Refresh balance + size position
                 balance = client.get_balance()
                 if balance <= 0:
