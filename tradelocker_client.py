@@ -274,10 +274,21 @@ class TradeLockerClient:
           tradableInstrumentId, name (symbol)
         """
         url = f"{self.base_url}/trade/accounts/{self.account_id}/positions"
-        resp = self.session.get(url, timeout=15)
-        if resp.status_code == 401:
-            self.refresh_access_token()
+        # Retry on 429 (rate limit) with backoff so the trailing loop can still
+        # read positions under load instead of failing outright.
+        resp = None
+        for attempt in range(4):
             resp = self.session.get(url, timeout=15)
+            if resp.status_code == 401:
+                self.refresh_access_token()
+                resp = self.session.get(url, timeout=15)
+            if resp.status_code == 429:
+                wait = 2 * (attempt + 1)
+                logger.warning(f"[Positions] 429 rate limited — backing off {wait}s "
+                               f"(attempt {attempt + 1}/4).")
+                time.sleep(wait)
+                continue
+            break
         resp.raise_for_status()
         data = resp.json()
 

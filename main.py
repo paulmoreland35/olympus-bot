@@ -161,9 +161,10 @@ MAX_DAILY_DRAWDOWN_PCT = float(os.getenv("MAX_DAILY_DRAWDOWN_PCT", "0.07"))
 MAX_OPEN_TRADES        = int(os.getenv("MAX_OPEN_TRADES", "3"))
 
 # How often the trailing loop polls open positions (seconds).
-# Lowered to 5s so fast index scalps (40-pt targets that resolve in seconds)
-# are actually caught at their breakeven trigger before they hit TP/SL.
-TRAILING_POLL_SEC = int(os.getenv("TRAILING_POLL_SEC", "5"))
+# 8s balances catching fast scalps against TradeLocker's rate limit on the
+# /positions endpoint — 5s + the per-position quote calls was triggering 429s
+# that stopped the loop from reading positions at all (breaking trailing).
+TRAILING_POLL_SEC = int(os.getenv("TRAILING_POLL_SEC", "8"))
 
 # Master pause switch — set TRADING_PAUSED=true to stop new trades from
 # both the webhook and the autonomous scanner without touching TradingView
@@ -311,7 +312,10 @@ def _link_trade_position(client, trade_id: str, ticker: str, action: str,
     distinct broker position instead of racing for the same one.
     """
     matched = False
-    for attempt in range(6):
+    # 3 attempts is enough for the position to appear; get_open_positions now
+    # absorbs 429s internally with backoff, so we no longer need a long burst
+    # of rapid lookups here (that burst was itself triggering the rate limit).
+    for attempt in range(3):
         try:
             candidates = [
                 p for p in client.get_open_positions()
