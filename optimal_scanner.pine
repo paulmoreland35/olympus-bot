@@ -31,6 +31,9 @@ tp3R     = input.float(3.0, "TP 3 (R)", step=0.1, group=grpR)
 closeSL  = input.bool(true, "Close Trade On Stop Loss", group=grpR)
 showHits = input.bool(true, "Show TP / SL Hit Markers", group=grpR)
 
+grpA       = "Alerts"
+customNote = input.string("", "Custom Alert Note (optional)", group=grpA, tooltip="Prepended to every alert() message sent to your webhook bot. Leave blank for none. Set your bot's webhook URL in this alert's Notifications tab, not here.")
+
 grpV     = "Visuals"
 showCloud = input.bool(true, "Show EMA Cloud", group=grpV)
 cloudUp   = input.color(color.new(#b7c4c7, 55), "Cloud Bull", group=grpV)
@@ -69,6 +72,9 @@ lblSizeF(string s) =>
 
 inSessF(string sess) =>
     not na(time(timeframe.period, sess, sessTZ))
+
+noteF(string tag) =>
+    tag == "" ? "" : tag + " | "
 
 sessColF(int id) =>
     color c = color.gray
@@ -186,6 +192,7 @@ bool aSL  = false
 // Format mirrors the native Olympus alert this bot's parser.py expects:
 //   BUY GBPUSD | 1 | 01:19 | ENTRY: 1.359 | SL: 1.355 | TP1: 1.363 | TP2: 1.366 | TP3: 1.379 | R:R 1:1
 barTime = str.format_time(time, "HH:mm")
+noteTag = noteF(customNote)
 string msgTp1 = ""
 string msgTp2 = ""
 string msgTp3 = ""
@@ -210,36 +217,36 @@ if tDir != 0 and bar_index > tBar
         if not hit1 and low <= tTP1
             hit1 := true
             aTp1 := true
-            msgTp1 := " TP1 HIT " + syminfo.ticker + " | " + timeframe.period + " | " + barTime + " | PRICE: " + fmt(tTP1)
+            msgTp1 := noteTag + " TP1 HIT " + syminfo.ticker + " | " + timeframe.period + " | " + barTime + " | PRICE: " + fmt(tTP1)
         if not hit2 and low <= tTP2
             hit2 := true
             aTp2 := true
-            msgTp2 := " TP2 HIT " + syminfo.ticker + " | " + timeframe.period + " | " + barTime + " | PRICE: " + fmt(tTP2)
+            msgTp2 := noteTag + " TP2 HIT " + syminfo.ticker + " | " + timeframe.period + " | " + barTime + " | PRICE: " + fmt(tTP2)
         if not hit3 and low <= tTP3
             hit3 := true
             aTp3 := true
-            msgTp3 := " TP3 HIT " + syminfo.ticker + " | " + timeframe.period + " | " + barTime + " | PRICE: " + fmt(tTP3)
+            msgTp3 := noteTag + " TP3 HIT " + syminfo.ticker + " | " + timeframe.period + " | " + barTime + " | PRICE: " + fmt(tTP3)
         if closeSL and high >= tSL
             stopped := true
             aSL := true
-            msgSL := " STOP LOSS HIT " + syminfo.ticker + " | " + timeframe.period + " | " + barTime + " | PRICE: " + fmt(tSL)
+            msgSL := noteTag + " STOP LOSS HIT " + syminfo.ticker + " | " + timeframe.period + " | " + barTime + " | PRICE: " + fmt(tSL)
     else
         if not hit1 and high >= tTP1
             hit1 := true
             aTp1 := true
-            msgTp1 := " TP1 HIT " + syminfo.ticker + " | " + timeframe.period + " | " + barTime + " | PRICE: " + fmt(tTP1)
+            msgTp1 := noteTag + " TP1 HIT " + syminfo.ticker + " | " + timeframe.period + " | " + barTime + " | PRICE: " + fmt(tTP1)
         if not hit2 and high >= tTP2
             hit2 := true
             aTp2 := true
-            msgTp2 := " TP2 HIT " + syminfo.ticker + " | " + timeframe.period + " | " + barTime + " | PRICE: " + fmt(tTP2)
+            msgTp2 := noteTag + " TP2 HIT " + syminfo.ticker + " | " + timeframe.period + " | " + barTime + " | PRICE: " + fmt(tTP2)
         if not hit3 and high >= tTP3
             hit3 := true
             aTp3 := true
-            msgTp3 := " TP3 HIT " + syminfo.ticker + " | " + timeframe.period + " | " + barTime + " | PRICE: " + fmt(tTP3)
+            msgTp3 := noteTag + " TP3 HIT " + syminfo.ticker + " | " + timeframe.period + " | " + barTime + " | PRICE: " + fmt(tTP3)
         if closeSL and low <= tSL
             stopped := true
             aSL := true
-            msgSL := " STOP LOSS HIT " + syminfo.ticker + " | " + timeframe.period + " | " + barTime + " | PRICE: " + fmt(tSL)
+            msgSL := noteTag + " STOP LOSS HIT " + syminfo.ticker + " | " + timeframe.period + " | " + barTime + " | PRICE: " + fmt(tSL)
 
     if showHits
         if aTp1
@@ -309,7 +316,7 @@ if newDir != 0
 
     string dirWord = newDir == -1 ? "SELL" : "BUY"
     string rrTxt   = str.tostring(tp1R, "#.##")
-    sigMsg := " " + dirWord + " " + syminfo.ticker + " | " + timeframe.period + " | " + barTime + " | ENTRY: " + fmt(tEntry) + " | SL: " + fmt(tSL) + " | TP1: " + fmt(tTP1) + " | TP2: " + fmt(tTP2) + " | TP3: " + fmt(tTP3) + " | R:R 1:" + rrTxt
+    sigMsg := noteTag + " " + dirWord + " " + syminfo.ticker + " | " + timeframe.period + " | " + barTime + " | ENTRY: " + fmt(tEntry) + " | SL: " + fmt(tSL) + " | TP1: " + fmt(tTP1) + " | TP2: " + fmt(tTP2) + " | TP3: " + fmt(tTP3) + " | R:R 1:" + rrTxt
 
     // signal label at the swing point
     if newDir == -1
