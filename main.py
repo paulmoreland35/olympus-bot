@@ -370,6 +370,41 @@ def _link_trade_position(client, trade_id: str, ticker: str, action: str,
         logger.warning(f"Could not link trade {trade_id} to a position ID after retries.")
 
 
+def _reconcile_and_cleanup(client) -> dict:
+    """
+    Close out trade-log entries that never got linked to a broker position
+    by matching them against TradeLocker's own order history (broker
+    truth, independent of this log's own bookkeeping) — used by both the
+    /reconcile-trades endpoint and the trailing loop's periodic auto-run.
+
+    Anything still unmatched against closed history is checked against
+    CURRENT open positions too before giving up on it — a trade genuinely
+    still open (just slow to sync) must never be marked unlinked. Only a
+    trade matching neither open nor closed broker state is closed out as
+    "unlinked": that combination means the order never actually resulted
+    in a real position at all (e.g. an IOC order the broker silently
+    cancelled), and no amount of further reconciliation will ever find it
+    — without this check those would sit "open" forever, since they can
+    never appear in closed-trade history either.
+    """
+    closed = client.get_closed_trades()
+    open_positions = client.get_open_positions()
+
+    result = trade_log.reconcile_orphans(closed)
+
+    open_ticker_sides = {
+        (str(p.get("name", "")).upper(), p.get("side")) for p in open_positions
+    }
+    given_up = []
+    for trade_id in result["unmatched"]:
+        ts = trade_log.get_ticker_side(trade_id)
+        if ts is not None and ts not in open_ticker_sides:
+            trade_log.mark_unlinked(trade_id)
+            given_up.append(trade_id)
+    result["given_up_no_fill"] = given_up
+    return result
+
+
 def _update_day_open(balance: float):
     """Record today's opening balance on the first call each day."""
     global _day_open_balance, _day_open_date
@@ -448,11 +483,19 @@ def _trailing_loop():
             # history (every 5 min). Live position-linking can fail under rate
             # limits, leaving entries stuck "open" with no outcome — this closes
             # them out from broker truth so per-scanner P&L actually populates.
+            # Also catches orders that never actually filled at all (e.g. an
+            # IOC order silently cancelled by the broker) — those can never
+            # appear in closed-trade history either, so reconcile_orphans alone
+            # would retry them forever; _reconcile_and_cleanup cross-checks
+            # against current open positions and gives up on genuine no-fills.
             if client is not None and (time.time() - _last_reconcile) > 300:
                 try:
-                    res = trade_log.reconcile_orphans(client.get_closed_trades())
+                    res = _reconcile_and_cleanup(client)
                     if res.get("matched"):
                         logger.info(f"[Reconcile] Closed {len(res['matched'])} orphaned trades.")
+                    if res.get("given_up_no_fill"):
+                        logger.info(f"[Reconcile] Gave up on {len(res['given_up_no_fill'])} "
+                                    f"trades that never filled (no matching open or closed position).")
                 except Exception as rec_err:
                     logger.warning(f"[Reconcile] Failed: {rec_err}")
                 _last_reconcile = time.time()
@@ -1059,27 +1102,14 @@ def reconcile_trades():
             password=TL_PASSWORD, server=TL_SERVER,
         )
         client.authenticate()
-        closed = client.get_closed_trades()
-        open_positions = client.get_open_positions()
+        result = _reconcile_and_cleanup(client)
     except Exception as e:
         return jsonify({"error": "Broker auth/history fetch failed", "detail": str(e)}), 502
 
-    result = trade_log.reconcile_orphans(closed)
-
-    open_ticker_sides = {
-        (str(p.get("name", "")).upper(), p.get("side")) for p in open_positions
-    }
-    given_up = []
-    for trade_id in result["unmatched"]:
-        ts = trade_log.get_ticker_side(trade_id)
-        if ts is not None and ts not in open_ticker_sides:
-            trade_log.mark_unlinked(trade_id)
-            given_up.append(trade_id)
-    result["given_up_no_fill"] = given_up
-
     logger.info(f"[TradeLog] Reconciled orphans — matched {len(result['matched'])}, "
-                f"given up (never filled) {len(given_up)}, "
-                f"still unmatched (possibly still open) {len(result['unmatched']) - len(given_up)}.")
+                f"given up (never filled) {len(result['given_up_no_fill'])}, "
+                f"still unmatched (possibly still open) "
+                f"{len(result['unmatched']) - len(result['given_up_no_fill'])}.")
     return jsonify(result), 200
 
 @app.route("/send-report", methods=["POST", "GET"])
