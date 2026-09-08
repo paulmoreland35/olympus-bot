@@ -214,6 +214,42 @@ class TradeLog:
             unmatched_ids = [t["id"] for t in orphans if t["id"] not in matched_ids]
             return {"matched": matched_ids, "unmatched": unmatched_ids}
 
+    def get_ticker_side(self, trade_id: str) -> Optional[tuple]:
+        """(ticker, side) for a trade_id, or None if not found. Used to check
+        a still-unmatched orphan against current open positions before
+        giving up on it — see mark_unlinked."""
+        with self._lock:
+            for t in self._trades:
+                if t["id"] == trade_id:
+                    return t["ticker"], t["side"]
+        return None
+
+    def mark_unlinked(self, trade_id: str):
+        """
+        Give up on ever linking this trade to a broker position and close
+        it out with exit_reason="unlinked" instead of leaving it sitting in
+        get_open_trades()/get_recent() forever looking like live exposure.
+
+        Called after _link_trade_position exhausts its retries with no
+        match. That can mean either the position sync is just slow (rare,
+        already covered by the retries + /reconcile-trades as a backstop),
+        or — the case this guards against — the order never actually
+        filled at all (e.g. an IOC order the broker silently cancelled),
+        in which case no amount of retrying or later reconciliation will
+        ever find a matching position, and the trade would otherwise stay
+        marked "open" indefinitely despite no real position ever existing.
+        pnl/exit_price are left null since there's no fill to measure
+        either from — this is a bookkeeping close, not a real trade exit.
+        """
+        with self._lock:
+            for t in self._trades:
+                if t["id"] == trade_id and t["position_id"] is None and t["closed_at"] is None:
+                    t["closed_at"]   = datetime.now(timezone.utc).isoformat()
+                    t["outcome"]     = "unknown"
+                    t["exit_reason"] = "unlinked"
+                    self._save()
+                    return
+
     def log_exit(
         self,
         position_id:  str,

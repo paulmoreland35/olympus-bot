@@ -891,6 +891,14 @@ def reconcile_trades():
     stuck "open" forever with no exit recorded) by matching them against
     TradeLocker's own order history — broker truth, independent of this
     log's own bookkeeping. Secret-protected since it writes to the log.
+
+    Anything still unmatched against closed history is checked against
+    CURRENT open positions too before giving up on it — a trade genuinely
+    still open (just slow to sync) must never be marked unlinked. Only a
+    trade matching neither open nor closed broker state is closed out as
+    "unlinked": that combination means the order never actually resulted
+    in a real position at all (e.g. an IOC order the broker silently
+    cancelled), and no amount of further reconciliation will ever find it.
     """
     secret = request.args.get("secret") or (request.get_json(silent=True) or {}).get("secret")
     if WEBHOOK_SECRET and secret != WEBHOOK_SECRET:
@@ -903,12 +911,26 @@ def reconcile_trades():
         )
         client.authenticate()
         closed = client.get_closed_trades()
+        open_positions = client.get_open_positions()
     except Exception as e:
         return jsonify({"error": "Broker auth/history fetch failed", "detail": str(e)}), 502
 
     result = trade_log.reconcile_orphans(closed)
+
+    open_ticker_sides = {
+        (str(p.get("name", "")).upper(), p.get("side")) for p in open_positions
+    }
+    given_up = []
+    for trade_id in result["unmatched"]:
+        ts = trade_log.get_ticker_side(trade_id)
+        if ts is not None and ts not in open_ticker_sides:
+            trade_log.mark_unlinked(trade_id)
+            given_up.append(trade_id)
+    result["given_up_no_fill"] = given_up
+
     logger.info(f"[TradeLog] Reconciled orphans — matched {len(result['matched'])}, "
-                f"unmatched {len(result['unmatched'])}.")
+                f"given up (never filled) {len(given_up)}, "
+                f"still unmatched (possibly still open) {len(result['unmatched']) - len(given_up)}.")
     return jsonify(result), 200
 
 @app.route("/send-report", methods=["POST", "GET"])
