@@ -183,6 +183,9 @@ bool aSL  = false
 
 // dynamic alert-message holders (script scope, reset each bar; filled at the
 // moment each event fires, before anything later this bar can move tSL/tTP*)
+// Format mirrors the native Olympus alert this bot's parser.py expects:
+//   BUY GBPUSD | 1 | 01:19 | ENTRY: 1.359 | SL: 1.355 | TP1: 1.363 | TP2: 1.366 | TP3: 1.379 | R:R 1:1
+barTime = str.format_time(time, "HH:mm")
 string msgTp1 = ""
 string msgTp2 = ""
 string msgTp3 = ""
@@ -207,36 +210,36 @@ if tDir != 0 and bar_index > tBar
         if not hit1 and low <= tTP1
             hit1 := true
             aTp1 := true
-            msgTp1 := " TP1 HIT " + syminfo.ticker + " | price: " + fmt(tTP1) + " - Optimal Scanner"
+            msgTp1 := " TP1 HIT " + syminfo.ticker + " | " + timeframe.period + " | " + barTime + " | PRICE: " + fmt(tTP1)
         if not hit2 and low <= tTP2
             hit2 := true
             aTp2 := true
-            msgTp2 := " TP2 HIT " + syminfo.ticker + " | price: " + fmt(tTP2) + " - Optimal Scanner"
+            msgTp2 := " TP2 HIT " + syminfo.ticker + " | " + timeframe.period + " | " + barTime + " | PRICE: " + fmt(tTP2)
         if not hit3 and low <= tTP3
             hit3 := true
             aTp3 := true
-            msgTp3 := " TP3 HIT " + syminfo.ticker + " | price: " + fmt(tTP3) + " - Optimal Scanner"
+            msgTp3 := " TP3 HIT " + syminfo.ticker + " | " + timeframe.period + " | " + barTime + " | PRICE: " + fmt(tTP3)
         if closeSL and high >= tSL
             stopped := true
             aSL := true
-            msgSL := " STOP LOSS HIT " + syminfo.ticker + " | price: " + fmt(tSL) + " - Optimal Scanner"
+            msgSL := " STOP LOSS HIT " + syminfo.ticker + " | " + timeframe.period + " | " + barTime + " | PRICE: " + fmt(tSL)
     else
         if not hit1 and high >= tTP1
             hit1 := true
             aTp1 := true
-            msgTp1 := " TP1 HIT " + syminfo.ticker + " | price: " + fmt(tTP1) + " - Optimal Scanner"
+            msgTp1 := " TP1 HIT " + syminfo.ticker + " | " + timeframe.period + " | " + barTime + " | PRICE: " + fmt(tTP1)
         if not hit2 and high >= tTP2
             hit2 := true
             aTp2 := true
-            msgTp2 := " TP2 HIT " + syminfo.ticker + " | price: " + fmt(tTP2) + " - Optimal Scanner"
+            msgTp2 := " TP2 HIT " + syminfo.ticker + " | " + timeframe.period + " | " + barTime + " | PRICE: " + fmt(tTP2)
         if not hit3 and high >= tTP3
             hit3 := true
             aTp3 := true
-            msgTp3 := " TP3 HIT " + syminfo.ticker + " | price: " + fmt(tTP3) + " - Optimal Scanner"
+            msgTp3 := " TP3 HIT " + syminfo.ticker + " | " + timeframe.period + " | " + barTime + " | PRICE: " + fmt(tTP3)
         if closeSL and low <= tSL
             stopped := true
             aSL := true
-            msgSL := " STOP LOSS HIT " + syminfo.ticker + " | price: " + fmt(tSL) + " - Optimal Scanner"
+            msgSL := " STOP LOSS HIT " + syminfo.ticker + " | " + timeframe.period + " | " + barTime + " | PRICE: " + fmt(tSL)
 
     if showHits
         if aTp1
@@ -305,7 +308,8 @@ if newDir != 0
     hit3   := false
 
     string dirWord = newDir == -1 ? "SELL" : "BUY"
-    sigMsg := " " + dirWord + " " + syminfo.ticker + " | " + timeframe.period + " | ENTRY: " + fmt(tEntry) + " | SL: " + fmt(tSL) + " | TP1: " + fmt(tTP1) + " | TP2: " + fmt(tTP2) + " | TP3: " + fmt(tTP3)
+    string rrTxt   = str.tostring(tp1R, "#.##")
+    sigMsg := " " + dirWord + " " + syminfo.ticker + " | " + timeframe.period + " | " + barTime + " | ENTRY: " + fmt(tEntry) + " | SL: " + fmt(tSL) + " | TP1: " + fmt(tTP1) + " | TP2: " + fmt(tTP2) + " | TP3: " + fmt(tTP3) + " | R:R 1:" + rrTxt
 
     // signal label at the swing point
     if newDir == -1
@@ -340,8 +344,8 @@ alertcondition(aSL,     "Stop Loss Hit","Stop loss hit - Optimal Scanner")
 // carry live entry/SL/TP prices. These alert() calls fire the same six
 // events with the live values baked in, matching TradingView's "Any alert()
 // function call" trigger (see README "Set up TradingView alerts") and the
-// Olympus format this bot's parser.py expects:
-//   BUY/SELL TICKER | TF | ENTRY: x | SL: x | TP1: x | TP2: x | TP3: x
+// native Olympus format this bot's parser.py expects, e.g.:
+//   BUY GBPUSD | 1 | 01:19 | ENTRY: 1.359 | SL: 1.355 | TP1: 1.363 | TP2: 1.366 | TP3: 1.379 | R:R 1:1
 if newDir != 0
     alert(sigMsg, alert.freq_once_per_bar_close)
 
