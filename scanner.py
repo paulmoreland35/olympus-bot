@@ -386,6 +386,11 @@ def run_scanner(client=None):
                     logger.info(f"[Scanner] LONGS_ONLY — ignoring SELL {broker_symbol}.")
                     continue
 
+                blocked = {t.strip().upper() for t in os.getenv("BLOCKED_TICKERS", "").split(",") if t.strip()}
+                if broker_symbol.upper() in blocked:
+                    logger.info(f"[Scanner] BLOCKED_TICKERS — ignoring {action.upper()} {broker_symbol}.")
+                    continue
+
                 # Refresh balance + size position
                 balance = client.get_balance()
                 if balance <= 0:

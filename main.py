@@ -208,6 +208,15 @@ LONGS_ONLY = os.getenv("LONGS_ONLY", "false").strip().lower() == "true"
 if LONGS_ONLY:
     logger.warning("[Filter] LONGS_ONLY is set — SELL signals will be ignored.")
 
+# Ticker blocklist — comma-separated symbols to reject outright, e.g.
+# BLOCKED_TICKERS=NAS100,US30. Checked after symbol remapping, so it matches
+# the broker's own instrument name regardless of what the alert called it.
+# A server-side backstop for "stop trading this instrument" independent of
+# whatever's still configured on the TradingView side.
+BLOCKED_TICKERS = {t.strip().upper() for t in os.getenv("BLOCKED_TICKERS", "").split(",") if t.strip()}
+if BLOCKED_TICKERS:
+    logger.warning(f"[Filter] BLOCKED_TICKERS set — rejecting: {', '.join(sorted(BLOCKED_TICKERS))}")
+
 # ------------------------------------------------------------------
 # Trailing stop manager + trade log (singletons)
 # ------------------------------------------------------------------
@@ -1285,7 +1294,15 @@ def webhook():
     if entry <= 0:
         return jsonify({"error": "Invalid entry price"}), 400
 
-    # 4a. Direction filter — LONGS_ONLY drops SELL signals (shorts underperform
+    # 4a. Ticker blocklist — checked before anything else can act on the
+    #     signal, and before it's forwarded to any partner account.
+    if ticker in BLOCKED_TICKERS:
+        logger.info(f"[Filter] BLOCKED_TICKERS set — ignoring {action.upper()} {ticker}.")
+        _record_webhook(summary=f"blocked: BLOCKED_TICKERS ({ticker})", count=False)
+        return jsonify({"status": "blocked",
+                        "reason": f"{ticker} is in BLOCKED_TICKERS — signal ignored."}), 200
+
+    # 4b. Direction filter — LONGS_ONLY drops SELL signals (shorts underperform
     #     on trending indices). Not forwarded to partners either.
     if LONGS_ONLY and action == "sell":
         logger.info(f"[Filter] LONGS_ONLY set — ignoring SELL {ticker}.")
