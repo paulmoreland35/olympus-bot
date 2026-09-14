@@ -1,0 +1,375 @@
+//@version=5
+indicator("Olympus Mechanical Scalper | 1:1 Regime Rotation", overlay=true, max_bars_back=500)
+
+// ===================================================================
+// OLYMPUS MECHANICAL SCALPER
+//
+// Codifies the FRAMEWORK described by Amoss (Traderfy "Funded" podcast,
+// Ep. w/ Rania) for trading index futures (NQ/YM-style):
+//   - Fixed, low risk:reward (default 1:1) "base hit" scalping, not
+//     high-R:R swings.
+//   - Purely mechanical entries — no discretionary overrides.
+//   - One position open at a time; a hard daily trade cap (he described
+//     "one trade, two trades maximum" most days).
+//   - Multiple ("around four") mechanical playbooks rotated in/out
+//     depending on market regime, rather than one static system used
+//     forever.
+//   - The regime read he described using: HOW FAST a system's trades
+//     resolve (hit SL/TP) tells you whether that system is "in sync"
+//     with current conditions. A play whose recent trades resolve slowly,
+//     or that is on a losing streak, gets stood down until conditions
+//     favor it again — matching "de-risk, take less accounts within
+//     that certain strategy."
+//   - Fixed risk per trade regardless of regime — this script does NOT
+//     size positions; your webhook bot's risk.py already applies a
+//     constant % of balance to every alert it receives, which is the
+//     "same amount of risk on every trade" behavior described.
+//
+// IMPORTANT: Amoss never disclosed his actual entry criteria on the
+// podcast (he explicitly said he does not trade on discretion/intuition,
+// but also did not name his specific setups). The four "plays" below are
+// a transparent, fully mechanical BASELINE that matches everything he DID
+// describe (session, R:R, cadence, regime-switching). Swap the entry
+// logic in any PLAY block for your own rules — the risk/regime/session
+// scaffolding around it is the reusable part.
+// ===================================================================
+
+// ============================ INPUTS ================================
+g0 = "Session"
+sess_start = input.int(13, "Session open (UTC hour)",  group=g0, minval=0, maxval=23, tooltip="Default ~ US cash open. Adjust for DST / your session.")
+sess_end   = input.int(20, "Session close (UTC hour)", group=g0, minval=0, maxval=23)
+
+g1 = "Risk / R:R"
+rr               = input.float(1.0, "Reward:Risk multiple", group=g1, minval=0.5, step=0.1, tooltip="Amoss: low R:R 'base hits', not high R:R swings.")
+atr_len          = input.int(14,  "ATR length",            group=g1)
+sl_atr_mult      = input.float(1.0, "ATR-based SL (x ATR)", group=g1, minval=0.1, step=0.1, tooltip="Used by plays with no natural structural SL.")
+max_trades_day   = input.int(2,   "Max trades per day",    group=g1, minval=1, maxval=10, tooltip="Amoss: 'one trade, two trades maximum, with the same amount of risk.'")
+
+g2 = "Regime Filter (Trade Velocity)"
+regime_lookback  = input.int(5,  "Trades to average per play",       group=g2, minval=2, maxval=20)
+fast_bars_max    = input.int(12, "Max avg bars-to-resolution ('in sync')", group=g2, minval=2, maxval=200, tooltip="If a play's recent trades resolve slower than this on average, it's stood down.")
+min_trades_judge = input.int(3,  "Min trades before judging a play",  group=g2, minval=1, maxval=20)
+loss_cooldown    = input.int(2,  "Consecutive losses that stand a play down", group=g2, minval=1, maxval=10)
+
+g3 = "Play 1: Opening Range Breakout"
+p1_on      = input.bool(true, "Enable Play 1", group=g3)
+orb_bars   = input.int(3, "Opening range length (bars)", group=g3, minval=1, maxval=50)
+
+g4 = "Play 2: EMA Trend Continuation"
+p2_on      = input.bool(true, "Enable Play 2", group=g4)
+ema_fast   = input.int(9,  "EMA fast",  group=g4)
+ema_slow   = input.int(21, "EMA slow",  group=g4)
+
+g5 = "Play 3: VWAP Mean Reversion"
+p3_on          = input.bool(true, "Enable Play 3", group=g5)
+vwap_dev_mult  = input.float(1.5, "Stretch distance (x ATR from VWAP)", group=g5, minval=0.2, step=0.1)
+
+g6 = "Play 4: Range Breakout (Consolidation)"
+p4_on            = input.bool(true, "Enable Play 4", group=g6)
+range_lookback   = input.int(20, "Consolidation lookback (bars)", group=g6, minval=5, maxval=200)
+range_max_atr    = input.float(1.2, "Max range width (x ATR) = 'consolidating'", group=g6, minval=0.2, step=0.1)
+
+g7 = "Display"
+show_table = input.bool(true, "Show regime dashboard", group=g7)
+
+// ============================ CORE ===================================
+atr = ta.atr(atr_len)
+utcH = hour(time, "UTC")
+inSession = utcH >= sess_start and utcH < sess_end
+
+// Daily trade cap
+newDay = ta.change(time("D")) != 0
+var int tradesToday = 0
+if newDay
+    tradesToday := 0
+canTradeToday = tradesToday < max_trades_day
+
+var bool anyTradeOpen = false
+
+// ============================ PLAY 1: ORB =============================
+sessionStart = inSession and not inSession[1]
+var float orbHigh = na
+var float orbLow  = na
+var int   sessionBarCount = na
+
+if sessionStart
+    orbHigh := high
+    orbLow  := low
+    sessionBarCount := 0
+else if inSession and not na(sessionBarCount)
+    sessionBarCount += 1
+    if sessionBarCount <= orb_bars
+        orbHigh := math.max(orbHigh, high)
+        orbLow  := math.min(orbLow, low)
+
+orbLocked = inSession and not na(sessionBarCount) and sessionBarCount > orb_bars
+p1_longSig  = p1_on and orbLocked and close > orbHigh and close[1] <= orbHigh
+p1_shortSig = p1_on and orbLocked and close < orbLow  and close[1] >= orbLow
+
+// ========================= PLAY 2: EMA CROSS ==========================
+emaF = ta.ema(close, ema_fast)
+emaS = ta.ema(close, ema_slow)
+p2_longSig  = p2_on and inSession and ta.crossover(emaF, emaS)
+p2_shortSig = p2_on and inSession and ta.crossunder(emaF, emaS)
+
+// ====================== PLAY 3: VWAP MEAN REVERSION ===================
+vwapVal = ta.vwap(hlc3)
+stretchedAbove = close > vwapVal + atr * vwap_dev_mult
+stretchedBelow = close < vwapVal - atr * vwap_dev_mult
+var bool wasStretchedAbove = false
+var bool wasStretchedBelow = false
+if stretchedAbove
+    wasStretchedAbove := true
+if stretchedBelow
+    wasStretchedBelow := true
+
+p3_shortSig = p3_on and inSession and wasStretchedAbove and close < vwapVal
+p3_longSig  = p3_on and inSession and wasStretchedBelow and close > vwapVal
+if p3_shortSig or p3_longSig
+    wasStretchedAbove := false
+    wasStretchedBelow := false
+
+// ===================== PLAY 4: RANGE BREAKOUT =========================
+rangeHi = ta.highest(high, range_lookback)
+rangeLo = ta.lowest(low, range_lookback)
+isConsolidating = (rangeHi - rangeLo) <= atr * range_max_atr
+
+p4_longSig  = p4_on and inSession and isConsolidating[1] and close > rangeHi[1]
+p4_shortSig = p4_on and inSession and isConsolidating[1] and close < rangeLo[1]
+
+// ===================== REGIME STATE (per play) ========================
+var array<int> p1_durs = array.new_int(0)
+var array<int> p2_durs = array.new_int(0)
+var array<int> p3_durs = array.new_int(0)
+var array<int> p4_durs = array.new_int(0)
+var int p1_lossStreak = 0
+var int p2_lossStreak = 0
+var int p3_lossStreak = 0
+var int p4_lossStreak = 0
+
+// NB: Pine's `and`/`or`/`?:` evaluate both sides unconditionally, so
+// array.avg(durs) must only ever be called from inside a real `if` guard
+// (never combined with the size check via `or`) or it will run on an
+// empty array before regime_lookback trades have completed.
+regimeOk(durs, lossStreak) =>
+    n = array.size(durs)
+    speedOk = true
+    if n >= min_trades_judge
+        speedOk := array.avg(durs) <= fast_bars_max
+    lossOk = lossStreak < loss_cooldown
+    speedOk and lossOk
+
+p1_regimeOk = regimeOk(p1_durs, p1_lossStreak)
+p2_regimeOk = regimeOk(p2_durs, p2_lossStreak)
+p3_regimeOk = regimeOk(p3_durs, p3_lossStreak)
+p4_regimeOk = regimeOk(p4_durs, p4_lossStreak)
+
+// ===================== TRADE STATE (per play) ==========================
+var bool  p1_inTrade = false
+var bool  p1_isLong  = false
+var int   p1_entryBar = na
+var float p1_sl = na
+var float p1_tp = na
+
+var bool  p2_inTrade = false
+var bool  p2_isLong  = false
+var int   p2_entryBar = na
+var float p2_sl = na
+var float p2_tp = na
+
+var bool  p3_inTrade = false
+var bool  p3_isLong  = false
+var int   p3_entryBar = na
+var float p3_sl = na
+var float p3_tp = na
+
+var bool  p4_inTrade = false
+var bool  p4_isLong  = false
+var int   p4_entryBar = na
+var float p4_sl = na
+var float p4_tp = na
+
+// ---- Resolve open trades first (SL assumed to win if both hit same bar) ----
+if p1_inTrade
+    hitTP = p1_isLong ? high >= p1_tp : low <= p1_tp
+    hitSL = p1_isLong ? low  <= p1_sl : high >= p1_sl
+    if hitSL or hitTP
+        dur = bar_index - p1_entryBar
+        array.push(p1_durs, dur)
+        if array.size(p1_durs) > regime_lookback
+            array.shift(p1_durs)
+        p1_lossStreak := hitSL and not hitTP ? p1_lossStreak + 1 : 0
+        p1_inTrade := false
+        anyTradeOpen := false
+
+if p2_inTrade
+    hitTP = p2_isLong ? high >= p2_tp : low <= p2_tp
+    hitSL = p2_isLong ? low  <= p2_sl : high >= p2_sl
+    if hitSL or hitTP
+        dur = bar_index - p2_entryBar
+        array.push(p2_durs, dur)
+        if array.size(p2_durs) > regime_lookback
+            array.shift(p2_durs)
+        p2_lossStreak := hitSL and not hitTP ? p2_lossStreak + 1 : 0
+        p2_inTrade := false
+        anyTradeOpen := false
+
+if p3_inTrade
+    hitTP = p3_isLong ? high >= p3_tp : low <= p3_tp
+    hitSL = p3_isLong ? low  <= p3_sl : high >= p3_sl
+    if hitSL or hitTP
+        dur = bar_index - p3_entryBar
+        array.push(p3_durs, dur)
+        if array.size(p3_durs) > regime_lookback
+            array.shift(p3_durs)
+        p3_lossStreak := hitSL and not hitTP ? p3_lossStreak + 1 : 0
+        p3_inTrade := false
+        anyTradeOpen := false
+
+if p4_inTrade
+    hitTP = p4_isLong ? high >= p4_tp : low <= p4_tp
+    hitSL = p4_isLong ? low  <= p4_sl : high >= p4_sl
+    if hitSL or hitTP
+        dur = bar_index - p4_entryBar
+        array.push(p4_durs, dur)
+        if array.size(p4_durs) > regime_lookback
+            array.shift(p4_durs)
+        p4_lossStreak := hitSL and not hitTP ? p4_lossStreak + 1 : 0
+        p4_inTrade := false
+        anyTradeOpen := false
+
+// ---- New entries (priority order: Play1 -> Play2 -> Play3 -> Play4) ----
+canEnter = not anyTradeOpen and canTradeToday
+
+// Play 1
+if canEnter and p1_regimeOk and (p1_longSig or p1_shortSig)
+    isLong = p1_longSig
+    sl = isLong ? orbLow : orbHigh
+    slDist = isLong ? close - sl : sl - close
+    if slDist > 0
+        tp = isLong ? close + slDist * rr : close - slDist * rr
+        p1_inTrade := true
+        p1_isLong  := isLong
+        p1_entryBar := bar_index
+        p1_sl := sl
+        p1_tp := tp
+        anyTradeOpen := true
+        tradesToday += 1
+        alert((isLong ? " BUY " : " SELL ") + syminfo.ticker + " | ORB | ENTRY: " + str.tostring(close, "#.####") + " | SL: " + str.tostring(sl, "#.####") + " | TP1: " + str.tostring(tp, "#.####"), alert.freq_once_per_bar_close)
+
+// Play 2
+if canEnter and not anyTradeOpen and p2_regimeOk and (p2_longSig or p2_shortSig)
+    isLong = p2_longSig
+    sl = isLong ? close - atr * sl_atr_mult : close + atr * sl_atr_mult
+    slDist = atr * sl_atr_mult
+    if slDist > 0
+        tp = isLong ? close + slDist * rr : close - slDist * rr
+        p2_inTrade := true
+        p2_isLong  := isLong
+        p2_entryBar := bar_index
+        p2_sl := sl
+        p2_tp := tp
+        anyTradeOpen := true
+        tradesToday += 1
+        alert((isLong ? " BUY " : " SELL ") + syminfo.ticker + " | EMAX | ENTRY: " + str.tostring(close, "#.####") + " | SL: " + str.tostring(sl, "#.####") + " | TP1: " + str.tostring(tp, "#.####"), alert.freq_once_per_bar_close)
+
+// Play 3
+if canEnter and not anyTradeOpen and p3_regimeOk and (p3_longSig or p3_shortSig)
+    isLong = p3_longSig
+    sl = isLong ? close - atr * sl_atr_mult : close + atr * sl_atr_mult
+    slDist = atr * sl_atr_mult
+    if slDist > 0
+        tp = isLong ? close + slDist * rr : close - slDist * rr
+        p3_inTrade := true
+        p3_isLong  := isLong
+        p3_entryBar := bar_index
+        p3_sl := sl
+        p3_tp := tp
+        anyTradeOpen := true
+        tradesToday += 1
+        alert((isLong ? " BUY " : " SELL ") + syminfo.ticker + " | VWAPR | ENTRY: " + str.tostring(close, "#.####") + " | SL: " + str.tostring(sl, "#.####") + " | TP1: " + str.tostring(tp, "#.####"), alert.freq_once_per_bar_close)
+
+// Play 4
+if canEnter and not anyTradeOpen and p4_regimeOk and (p4_longSig or p4_shortSig)
+    isLong = p4_longSig
+    sl = isLong ? rangeLo[1] : rangeHi[1]
+    slDist = isLong ? close - sl : sl - close
+    if slDist > 0
+        tp = isLong ? close + slDist * rr : close - slDist * rr
+        p4_inTrade := true
+        p4_isLong  := isLong
+        p4_entryBar := bar_index
+        p4_sl := sl
+        p4_tp := tp
+        anyTradeOpen := true
+        tradesToday += 1
+        alert((isLong ? " BUY " : " SELL ") + syminfo.ticker + " | RNGBRK | ENTRY: " + str.tostring(close, "#.####") + " | SL: " + str.tostring(sl, "#.####") + " | TP1: " + str.tostring(tp, "#.####"), alert.freq_once_per_bar_close)
+
+// alertcondition() entries for the TV alert dropdown (static message; dynamic
+// per-play detail comes from the alert() calls above, same pattern as
+// strategy.pine's existing alertcondition() usage).
+anyLongSig  = p1_longSig  or p2_longSig  or p3_longSig  or p4_longSig
+anyShortSig = p1_shortSig or p2_shortSig or p3_shortSig or p4_shortSig
+alertcondition(anyLongSig,  title="BUY Signal",  message=" BUY {{ticker}} | MECH | ENTRY: {{close}} | SL: 0 | TP1: 0")
+alertcondition(anyShortSig, title="SELL Signal", message=" SELL {{ticker}} | MECH | ENTRY: {{close}} | SL: 0 | TP1: 0")
+
+// ============================ VISUALS =================================
+plotshape(p1_longSig or p2_longSig or p3_longSig or p4_longSig,   "Entry Long",  shape.triangleup,   location.belowbar, color.lime, size=size.small)
+plotshape(p1_shortSig or p2_shortSig or p3_shortSig or p4_shortSig, "Entry Short", shape.triangledown, location.abovebar, color.red,  size=size.small)
+
+plot(show_table ? emaF : na, "EMA Fast", color=color.new(color.aqua, 30))
+plot(show_table ? emaS : na, "EMA Slow", color=color.new(color.orange, 30))
+plot(show_table ? vwapVal : na, "VWAP", color=color.new(color.yellow, 20), linewidth=2)
+
+bgcolor(inSession ? color.new(color.blue, 96) : na, title="Session")
+
+// ============================ DASHBOARD ================================
+var tbl = table.new(position.top_right, 3, 9,
+     bgcolor      = color.new(color.black, 68),
+     border_color = color.new(color.gray,  40), border_width=1,
+     frame_color  = color.gray, frame_width=1)
+
+colA = color.new(color.gray, 0)
+colG = color.lime
+colR = color.red
+
+// Returns [status text, status color, avg-duration text] — pure, no table
+// access — so the actual table.cell() calls all happen inline below,
+// matching strategy.pine's own convention in this repo.
+f_playStatus(durs, lossStreak, on, regOk) =>
+    n = array.size(durs)
+    avgTxt = "—"
+    if n > 0
+        avgTxt := str.tostring(array.avg(durs), "#.#") + "b"
+    status = not on ? "OFF" : regOk ? "READY" : "COOLDOWN"
+    stColor = not on ? colA : regOk ? colG : colR
+    [status, stColor, avgTxt]
+
+if show_table and barstate.islast
+    table.cell(tbl, 0, 0, "MECH SCALPER", text_color=color.yellow, text_size=size.small, text_halign=text.align_left)
+    table.cell(tbl, 1, 0, inSession ? "IN SESSION" : "CLOSED", text_color=inSession ? colG : colA, text_size=size.small)
+    table.cell(tbl, 2, 0, str.tostring(tradesToday) + "/" + str.tostring(max_trades_day) + " today", text_color=canTradeToday ? colA : colR, text_size=size.small)
+
+    [p1_status, p1_color, p1_avg] = f_playStatus(p1_durs, p1_lossStreak, p1_on, p1_regimeOk)
+    table.cell(tbl, 0, 1, "Play 1 ORB", text_color=colA, text_size=size.small, text_halign=text.align_left)
+    table.cell(tbl, 1, 1, p1_status, text_color=p1_color, text_size=size.small)
+    table.cell(tbl, 2, 1, "avg " + p1_avg + " | L" + str.tostring(p1_lossStreak), text_color=colA, text_size=size.tiny)
+
+    [p2_status, p2_color, p2_avg] = f_playStatus(p2_durs, p2_lossStreak, p2_on, p2_regimeOk)
+    table.cell(tbl, 0, 2, "Play 2 EMAX", text_color=colA, text_size=size.small, text_halign=text.align_left)
+    table.cell(tbl, 1, 2, p2_status, text_color=p2_color, text_size=size.small)
+    table.cell(tbl, 2, 2, "avg " + p2_avg + " | L" + str.tostring(p2_lossStreak), text_color=colA, text_size=size.tiny)
+
+    [p3_status, p3_color, p3_avg] = f_playStatus(p3_durs, p3_lossStreak, p3_on, p3_regimeOk)
+    table.cell(tbl, 0, 3, "Play 3 VWAPR", text_color=colA, text_size=size.small, text_halign=text.align_left)
+    table.cell(tbl, 1, 3, p3_status, text_color=p3_color, text_size=size.small)
+    table.cell(tbl, 2, 3, "avg " + p3_avg + " | L" + str.tostring(p3_lossStreak), text_color=colA, text_size=size.tiny)
+
+    [p4_status, p4_color, p4_avg] = f_playStatus(p4_durs, p4_lossStreak, p4_on, p4_regimeOk)
+    table.cell(tbl, 0, 4, "Play 4 RNGBRK", text_color=colA, text_size=size.small, text_halign=text.align_left)
+    table.cell(tbl, 1, 4, p4_status, text_color=p4_color, text_size=size.small)
+    table.cell(tbl, 2, 4, "avg " + p4_avg + " | L" + str.tostring(p4_lossStreak), text_color=colA, text_size=size.tiny)
+
+    table.cell(tbl, 0, 5, "Open trade", text_color=colA, text_size=size.small, text_halign=text.align_left)
+    table.cell(tbl, 1, 5, anyTradeOpen ? "YES" : "NO", text_color=anyTradeOpen ? color.yellow : colA, text_size=size.small)
+    table.cell(tbl, 2, 5, "R:R " + str.tostring(rr, "#.#"), text_color=colA, text_size=size.small)
