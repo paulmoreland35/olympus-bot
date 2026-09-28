@@ -146,6 +146,44 @@ Add your own mappings in `parser.py` → `SYMBOL_MAP`.
 
 ---
 
+## 🎯 Olympus Sniper FX Scanner (TradingView, Pine Script v6)
+
+`olympus_sniper_fx.pine` is a chart indicator that calls forex trades. It is tuned for
+GBPUSD, EURUSD, GBPJPY, USDJPY, GBPCAD and NZDCAD, and runs on any pair.
+
+**Install:** TradingView → Pine Editor → paste the file → *Add to chart*.
+
+**What you see**
+- ▲ BUY / ▼ SELL labels with a grade (A+ / A / B). Hover a label to see the setup and its levels.
+- **White** line = entry, **red** line = stop loss, **green** lines = TP1 / TP2 / TP3.
+  A TP line turns solid once it is hit, and every closed trade is stamped ✅ WIN / ❌ LOSS with its R result.
+- Dashboard: market bias, the live trade, win rate and net R on this chart, and win rate for 5 timeframes.
+- Pair scanner: 12 pairs showing live BUY/SELL, trend, win rate and trade age.
+
+**How a trade is called:** a trigger has to fire (Break & Retest, Supply & Demand, SMC Order Block,
+Fair Value Gap, ICT liquidity sweep + displacement, or a trend-filtered 9/21 EMA cross). Then the
+confluence score has to reach the mode's minimum: *Sniper* 5, *Balanced* 4, *Aggressive* 3.
+Confluence comes from the 50/200 EMA trend, market structure (last BOS), ICT kill zones,
+premium/discount and RSI. The chart, the timeframe table and the scanner all use the same engine,
+so their numbers match.
+
+**Trade rules used for the stats:** entry on the signal candle's close. The SL sits beyond the recent swing,
+kept between 0.8 and 3 ATR. TP1/2/3 are at 1R/2R/3R, with 1/3 of the position closed at each.
+After TP1 the SL moves to entry, and after TP2 it moves to TP1. If a candle touches both SL and TP, the stop counts first.
+A trade is a win when its total R is above zero.
+
+**Auto-trading:** create one alert with *Condition: Olympus Sniper FX → Any alert() function call* and point it
+at the webhook. The entry message uses the parser's format, and the bot tags these trades as source `Olympus Sniper`:
+```
+Olympus Sniper 🚀 BUY GBPUSD | 15 | ENTRY: 1.27012 | SL: 1.26850 | TP1: 1.27174 | TP2: 1.27336 | TP3: 1.27498 | R:R 1:3 | Grade A+ | Break & Retest + Order Block
+```
+The optional TP/SL-hit alerts never contain BUY or SELL, so the bot will not trade on them.
+
+> Past signal statistics are simulated on the history TradingView has loaded, and they are not a guarantee of future results.
+> The timeframe table and the scanner run 17 extra data requests. If the script is slow, lower the number of chart bars or use fewer pairs.
+
+---
+
 ## 📁 File Structure
 ```
 olympus-bot/
@@ -153,6 +191,8 @@ olympus-bot/
 ├── tradelocker_client.py # TradeLocker API client
 ├── risk.py              # Position size calculator
 ├── parser.py            # Alert message parser
+├── strategy.pine        # Olympus SMC v3 indicator (gold / indices)
+├── olympus_sniper_fx.pine # Sniper FX scanner (forex, Pine v6)
 ├── requirements.txt
 ├── Procfile
 └── railway.json

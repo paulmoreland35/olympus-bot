@@ -1,0 +1,805 @@
+//@version=6
+indicator("Olympus Sniper FX Scanner", shorttitle="Olympus Sniper FX", overlay=true, max_lines_count=500, max_labels_count=500, max_boxes_count=500, max_bars_back=500)
+
+// ═══════════════════════════════════════════════════════════════════════════════
+//  OLYMPUS SNIPER FX · multi-strategy confluence scanner for forex
+//
+//  Built for GBPUSD · EURUSD · GBPJPY · USDJPY · GBPCAD · NZDCAD, and it runs
+//  on any pair.
+//
+//  HOW IT THINKS
+//  A trade is only called when a TRIGGER fires AND enough CONFLUENCE lines up.
+//
+//  Triggers (what happened on this candle):
+//    1. Break & Retest     : swing high/low broken, then retested and held
+//    2. Supply & Demand    : first return to a fresh base before a big candle
+//    3. SMC Order Block    : first return to the last opposite candle before BOS
+//    4. SMC Fair Value Gap : first return into a 3-candle imbalance
+//    5. ICT Sweep          : liquidity grab past a swing, then a displacement candle
+//    6. EMA Cross          : 9/21 EMA cross on the right side of the 200 EMA
+//
+//  Confluence (context):
+//    trend (EMA 50/200) · market structure (last BOS) · ICT kill zone ·
+//    premium/discount (buy cheap, sell expensive) · healthy RSI momentum
+//
+//  Score = triggers + confluence. The mode sets the minimum score:
+//    Sniper 5 · Balanced 4 · Aggressive 3
+//
+//  TRADE MANAGEMENT (identical on every timeframe and in the scanner)
+//    Entry at signal close · SL beyond the swing (ATR-clamped)
+//    TP1/TP2/TP3 = 1R/2R/3R · 1/3 closed at each TP
+//    Optional: SL to entry at TP1, SL to TP1 at TP2
+//    A trade is a WIN if its total result in R is above zero.
+//
+//  CHART COLOURS:  WHITE = Entry   RED = Stop Loss   GREEN = Take Profits
+// ═══════════════════════════════════════════════════════════════════════════════
+
+
+// ───────────────────────────── ① QUICK SETUP ─────────────────────────────
+G_QS = "① Quick Setup (start here)"
+modeIn    = input.string("Sniper", "Signal mode", options=["Sniper", "Balanced", "Aggressive"], group=G_QS, tooltip="Sniper = only the highest-quality setups (fewest trades).\nBalanced = more trades, still filtered.\nAggressive = the most trades.")
+needTrend = input.bool(true, "Only trade WITH the trend (200 EMA)", group=G_QS, tooltip="Buys only when price is above the 200 EMA, sells only when below. Strongly recommended for beginners.")
+onlyKZ    = input.bool(false, "Only trade in the London / New York kill zones", group=G_QS, tooltip="ICT kill zones (New York time): London 02:00-05:00, New York 07:00-10:00. The busiest and cleanest hours for FX.")
+
+// ───────────────────────────── ② RISK ─────────────────────────────
+G_RK = "② Stop Loss & Take Profits"
+tp1RR    = input.float(1.0,  "TP1 (x risk)", minval=0.2, step=0.1, group=G_RK)
+tp2RR    = input.float(2.0,  "TP2 (x risk)", minval=0.2, step=0.1, group=G_RK)
+tp3RR    = input.float(3.0,  "TP3 (x risk)", minval=0.2, step=0.1, group=G_RK)
+slBuf    = input.float(0.25, "SL buffer past the swing (x ATR)", minval=0.0, step=0.05, group=G_RK)
+slMinAtr = input.float(0.8,  "Minimum SL distance (x ATR)", minval=0.1, step=0.1, group=G_RK)
+slMaxAtr = input.float(3.0,  "Maximum SL distance (x ATR)", minval=0.5, step=0.1, group=G_RK)
+useBE    = input.bool(true,  "Protect profit: SL to entry at TP1, SL to TP1 at TP2", group=G_RK)
+maxBars  = input.int(150,    "Auto-close a trade after N bars", minval=5, group=G_RK)
+
+// ───────────────────────────── ③ STRATEGIES ─────────────────────────────
+G_ST = "③ Strategies"
+useBR      = input.bool(true, "Break & Retest", group=G_ST)
+useSD      = input.bool(true, "Supply & Demand zones", group=G_ST)
+useOB      = input.bool(true, "SMC Order Blocks (BOS / CHoCH)", group=G_ST)
+useFVG     = input.bool(true, "SMC Fair Value Gaps", group=G_ST)
+useICT     = input.bool(true, "ICT Liquidity Sweep + Displacement", group=G_ST)
+useMA      = input.bool(true, "EMA Cross (trend filtered)", group=G_ST)
+pivLen     = input.int(5, "Swing strength (bars each side)", minval=2, maxval=20, group=G_ST)
+retestBars = input.int(20, "Break & Retest: max bars to wait", minval=3, group=G_ST)
+dispMult   = input.float(1.5, "Displacement candle size (x ATR)", minval=0.5, step=0.1, group=G_ST)
+maFastLen  = input.int(9, "Fast EMA", minval=2, group=G_ST, inline="ma")
+maSlowLen  = input.int(21, "Slow EMA", minval=3, group=G_ST, inline="ma")
+trendLen   = input.int(200, "Trend EMA", minval=20, group=G_ST)
+
+// ───────────────────────────── ④ DISPLAY ─────────────────────────────
+G_DS = "④ Display"
+showPast  = input.bool(true, "Show past trades", group=G_DS)
+maxDrawn  = input.int(40, "Past trades to draw", minval=1, maxval=80, group=G_DS)
+showZones = input.bool(false, "Show active zones (S&D, OB, FVG, B&R)", group=G_DS)
+showEMA   = input.bool(true, "Show 200 EMA trend line", group=G_DS)
+showKZ    = input.bool(false, "Shade kill zones", group=G_DS)
+showDash  = input.bool(true, "Show dashboard", group=G_DS)
+dashPosIn = input.string("Top Right", "Dashboard position", options=["Top Right", "Top Left", "Bottom Right", "Bottom Left", "Middle Right"], group=G_DS)
+sizeIn    = input.string("Small", "Text size", options=["Tiny", "Small", "Normal"], group=G_DS)
+
+// ───────────────────────────── ⑤ TIMEFRAME STATS ─────────────────────────────
+G_TF = "⑤ Win rate by timeframe"
+showTF = input.bool(true, "Show win rate by timeframe", group=G_TF)
+tf1 = input.timeframe("5",   "Timeframe 1", group=G_TF)
+tf2 = input.timeframe("15",  "Timeframe 2", group=G_TF)
+tf3 = input.timeframe("60",  "Timeframe 3", group=G_TF)
+tf4 = input.timeframe("240", "Timeframe 4", group=G_TF)
+tf5 = input.timeframe("D",   "Timeframe 5", group=G_TF)
+
+// ───────────────────────────── ⑥ SCANNER ─────────────────────────────
+G_SC = "⑥ Pair scanner"
+showScan  = input.bool(true, "Show pair scanner", group=G_SC)
+scanTF    = input.timeframe("", "Scanner timeframe (empty = chart)", group=G_SC)
+scanPosIn = input.string("Bottom Right", "Scanner position", options=["Top Right", "Top Left", "Bottom Right", "Bottom Left", "Middle Right"], group=G_SC)
+sym1  = input.symbol("OANDA:GBPUSD", "Pair 1",  group=G_SC)
+sym2  = input.symbol("OANDA:EURUSD", "Pair 2",  group=G_SC)
+sym3  = input.symbol("OANDA:GBPJPY", "Pair 3",  group=G_SC)
+sym4  = input.symbol("OANDA:USDJPY", "Pair 4",  group=G_SC)
+sym5  = input.symbol("OANDA:GBPCAD", "Pair 5",  group=G_SC)
+sym6  = input.symbol("OANDA:NZDCAD", "Pair 6",  group=G_SC)
+sym7  = input.symbol("OANDA:AUDUSD", "Pair 7",  group=G_SC)
+sym8  = input.symbol("OANDA:USDCAD", "Pair 8",  group=G_SC)
+sym9  = input.symbol("OANDA:EURJPY", "Pair 9",  group=G_SC)
+sym10 = input.symbol("OANDA:EURGBP", "Pair 10", group=G_SC)
+sym11 = input.symbol("OANDA:USDCHF", "Pair 11", group=G_SC)
+sym12 = input.symbol("OANDA:NZDUSD", "Pair 12", group=G_SC)
+
+// ───────────────────────────── ⑦ ALERTS ─────────────────────────────
+G_AL = "⑦ Alerts"
+alertEntries = input.bool(true, "Alert on new BUY / SELL", group=G_AL, tooltip="Create ONE alert: Condition = this indicator, 'Any alert() function call'. Messages use the Olympus bot format (ENTRY / SL / TP1 / TP2 / TP3).")
+alertExits   = input.bool(false, "Alert on TP / SL hits", group=G_AL, tooltip="Informational only. These messages never contain BUY or SELL, so a webhook bot will not open trades from them.")
+
+
+// ═══════════════════════════════ THEME ═══════════════════════════════
+cBull   = #00E676
+cBear   = #FF5252
+cGold   = #FFC107
+cEntry  = #FFFFFF
+cSL     = #FF1744
+cTP     = #00E676
+cBg     = #0E1320
+cRow1   = #141A2A
+cRow2   = #182034
+cHead   = #1F2B47
+cText   = #E6EAF2
+cMuted  = #8B95A9
+cBorder = #26314D
+
+txtSize = sizeIn == "Tiny" ? size.tiny : sizeIn == "Normal" ? size.normal : size.small
+minScore = modeIn == "Sniper" ? 5 : modeIn == "Balanced" ? 4 : 3
+maxScore = (useBR ? 1 : 0) + (useSD ? 1 : 0) + (useOB ? 1 : 0) + (useFVG ? 1 : 0) + (useICT ? 1 : 0) + (useMA ? 1 : 0) + 5
+
+f_pos(string s) =>
+    s == "Top Left" ? position.top_left : s == "Bottom Right" ? position.bottom_right : s == "Bottom Left" ? position.bottom_left : s == "Middle Right" ? position.middle_right : position.top_right
+
+
+// ═══════════════════════════════ HELPERS ═══════════════════════════════
+f_px(float p) =>
+    na(p) ? "—" : str.tostring(p, format.mintick)
+
+f_r(float r) =>
+    na(r) ? "—" : (r >= 0 ? "+" : "") + str.tostring(r, "0.0") + "R"
+
+f_wr(int w, int l) =>
+    int n = nz(w) + nz(l)
+    n > 0 ? nz(w) * 100.0 / n : na
+
+f_wrTxt(float wr) =>
+    na(wr) ? "—" : str.tostring(wr, "0") + "%"
+
+f_wrCol(float wr) =>
+    na(wr) ? cMuted : wr >= 60 ? cBull : wr >= 45 ? cGold : cBear
+
+f_grade(int s) =>
+    s >= minScore + 2 ? "A+" : s >= minScore + 1 ? "A" : "B"
+
+f_stars(int s) =>
+    s >= minScore + 2 ? "★★★" : s >= minScore + 1 ? "★★☆" : "★☆☆"
+
+f_bit(int m, int b) =>
+    math.floor(m / math.pow(2, b)) % 2 == 1
+
+f_names(int m, string sep) =>
+    arr = array.new_string()
+    if f_bit(m, 0)
+        arr.push("Break & Retest")
+    if f_bit(m, 1)
+        arr.push("Supply & Demand")
+    if f_bit(m, 2)
+        arr.push("Order Block")
+    if f_bit(m, 3)
+        arr.push("Fair Value Gap")
+    if f_bit(m, 4)
+        arr.push("ICT Sweep")
+    if f_bit(m, 5)
+        arr.push("EMA Cross")
+    arr.size() > 0 ? arr.join(sep) : "—"
+
+f_tfName(string tf) =>
+    string t = tf == "" ? timeframe.period : tf
+    int s = timeframe.in_seconds(t)
+    s < 3600 ? str.tostring(math.round(s / 60)) + "m" : s < 86400 ? str.tostring(math.round(s / 3600)) + "H" : s < 604800 ? str.tostring(math.round(s / 86400)) + "D" : s < 2419200 ? str.tostring(math.round(s / 604800)) + "W" : "1M"
+
+f_short(string sym) =>
+    parts = str.split(sym, ":")
+    parts.get(parts.size() - 1)
+
+
+// ═══════════════════════════════ ENGINE ═══════════════════════════════
+// One function = signals + trade simulation. The chart, every timeframe row
+// and every scanner row all run this same code, so the numbers always agree.
+f_engine() =>
+    // ── core series (computed on every bar)
+    float atr     = ta.atr(14)
+    float emaF    = ta.ema(close, maFastLen)
+    float emaS    = ta.ema(close, maSlowLen)
+    float ema50   = ta.ema(close, 50)
+    float emaT    = ta.ema(close, trendLen)
+    float rsi     = ta.rsi(close, 14)
+    float ph      = ta.pivothigh(high, pivLen, pivLen)
+    float pl      = ta.pivotlow(low, pivLen, pivLen)
+    float rngHi   = ta.highest(high, 50)
+    float rngLo   = ta.lowest(low, 50)
+    float swLo    = ta.lowest(low, pivLen + 2)
+    float swHi    = ta.highest(high, pivLen + 2)
+    float hh3     = ta.highest(high, 3)[1]
+    float ll3     = ta.lowest(low, 3)[1]
+    bool  crossUp = ta.crossover(emaF, emaS)
+    bool  crossDn = ta.crossunder(emaF, emaS)
+    float body    = math.abs(close - open)
+    float body1   = math.abs(close[1] - open[1])
+    bool  bullBar = close > open
+    bool  bearBar = close < open
+    int   nyH     = hour(time, "America/New_York")
+    bool  inKZ    = (nyH >= 2 and nyH < 5) or (nyH >= 7 and nyH < 10)
+    bool  upTrend = close > emaT and ema50 > emaT
+    bool  dnTrend = close < emaT and ema50 < emaT
+    float mid     = (rngHi + rngLo) / 2
+
+    // ── market structure (BOS / CHoCH)
+    var float lastPH = na
+    var float lastPL = na
+    var bool  phUsed = false
+    var bool  plUsed = false
+    var int   bias   = 0
+    if not na(ph)
+        lastPH := ph
+        phUsed := false
+    if not na(pl)
+        lastPL := pl
+        plUsed := false
+    bool  bosUp    = not na(lastPH) and not phUsed and close > lastPH
+    bool  bosDn    = not na(lastPL) and not plUsed and close < lastPL
+    float brokenHi = lastPH
+    float brokenLo = lastPL
+    if bosUp
+        phUsed := true
+        bias   := 1
+    if bosDn
+        plUsed := true
+        bias   := -1
+
+    // ── 1. Break & Retest
+    var float brUp    = na
+    var int   brUpBar = na
+    var float brDn    = na
+    var int   brDnBar = na
+    bool brLong  = false
+    bool brShort = false
+    if not na(brUp)
+        if close < brUp - 0.5 * atr or bar_index - brUpBar > retestBars
+            brUp := na
+        else if bar_index > brUpBar + 1 and low <= brUp + 0.15 * atr and close > brUp and bullBar
+            brLong := true
+            brUp   := na
+    if not na(brDn)
+        if close > brDn + 0.5 * atr or bar_index - brDnBar > retestBars
+            brDn := na
+        else if bar_index > brDnBar + 1 and high >= brDn - 0.15 * atr and close < brDn and bearBar
+            brShort := true
+            brDn    := na
+    if bosUp
+        brUp    := brokenHi
+        brUpBar := bar_index
+    if bosDn
+        brDn    := brokenLo
+        brDnBar := bar_index
+
+    // ── 2. Supply & Demand (base candle before a displacement candle)
+    var float dTop = na
+    var float dBot = na
+    var float sTop = na
+    var float sBot = na
+    bool sdLong  = false
+    bool sdShort = false
+    if not na(dTop)
+        if close < dBot
+            dTop := na
+            dBot := na
+        else if low <= dTop and close > dTop and bullBar
+            sdLong := true
+            dTop   := na
+            dBot   := na
+    if not na(sBot)
+        if close > sTop
+            sTop := na
+            sBot := na
+        else if high >= sBot and close < sBot and bearBar
+            sdShort := true
+            sTop    := na
+            sBot    := na
+    if bullBar and body > dispMult * atr and body1 < 0.6 * atr
+        dTop := high[1]
+        dBot := low[1]
+    if bearBar and body > dispMult * atr and body1 < 0.6 * atr
+        sTop := high[1]
+        sBot := low[1]
+
+    // ── 3. SMC Order Blocks (last opposite candle before the break)
+    var float obBT = na
+    var float obBB = na
+    var float obST = na
+    var float obSB = na
+    bool obLong  = false
+    bool obShort = false
+    if not na(obBT)
+        if close < obBB
+            obBT := na
+            obBB := na
+        else if low <= obBT and close > obBT and bullBar
+            obLong := true
+            obBT   := na
+            obBB   := na
+    if not na(obSB)
+        if close > obST
+            obST := na
+            obSB := na
+        else if high >= obSB and close < obSB and bearBar
+            obShort := true
+            obST    := na
+            obSB    := na
+    if bosUp
+        for i = 1 to 15
+            if close[i] < open[i]
+                obBT := high[i]
+                obBB := low[i]
+                break
+    if bosDn
+        for i = 1 to 15
+            if close[i] > open[i]
+                obST := high[i]
+                obSB := low[i]
+                break
+
+    // ── 4. SMC Fair Value Gaps
+    var float fBT = na
+    var float fBB = na
+    var float fST = na
+    var float fSB = na
+    bool fvgLong  = false
+    bool fvgShort = false
+    if not na(fBT)
+        if close < fBB
+            fBT := na
+            fBB := na
+        else if low <= fBT and close > fBT and bullBar
+            fvgLong := true
+            fBT     := na
+            fBB     := na
+    if not na(fSB)
+        if close > fST
+            fST := na
+            fSB := na
+        else if high >= fSB and close < fSB and bearBar
+            fvgShort := true
+            fST      := na
+            fSB      := na
+    if low > high[2] and close[1] > open[1] and low - high[2] >= 0.1 * atr
+        fBT := low
+        fBB := high[2]
+    if high < low[2] and close[1] < open[1] and low[2] - high >= 0.1 * atr
+        fST := low[2]
+        fSB := high
+
+    // ── 5. ICT liquidity sweep + displacement (market structure shift)
+    var int sweepBullBar = na
+    var int sweepBearBar = na
+    if not na(lastPL) and low < lastPL and close > lastPL
+        sweepBullBar := bar_index
+    if not na(lastPH) and high > lastPH and close < lastPH
+        sweepBearBar := bar_index
+    bool ictLong  = not na(sweepBullBar) and bar_index - sweepBullBar <= 10 and bullBar and body > atr and close > hh3
+    bool ictShort = not na(sweepBearBar) and bar_index - sweepBearBar <= 10 and bearBar and body > atr and close < ll3
+    if ictLong
+        sweepBullBar := na
+    if ictShort
+        sweepBearBar := na
+
+    // ── 6. EMA cross on the right side of the trend EMA
+    bool maLong  = crossUp and close > emaT
+    bool maShort = crossDn and close < emaT
+
+    // ── confluence score
+    int trigL = (useBR and brLong ? 1 : 0) + (useSD and sdLong ? 1 : 0) + (useOB and obLong ? 1 : 0) + (useFVG and fvgLong ? 1 : 0) + (useICT and ictLong ? 1 : 0) + (useMA and maLong ? 1 : 0)
+    int trigS = (useBR and brShort ? 1 : 0) + (useSD and sdShort ? 1 : 0) + (useOB and obShort ? 1 : 0) + (useFVG and fvgShort ? 1 : 0) + (useICT and ictShort ? 1 : 0) + (useMA and maShort ? 1 : 0)
+    int maskL = (useBR and brLong ? 1 : 0) + (useSD and sdLong ? 2 : 0) + (useOB and obLong ? 4 : 0) + (useFVG and fvgLong ? 8 : 0) + (useICT and ictLong ? 16 : 0) + (useMA and maLong ? 32 : 0)
+    int maskS = (useBR and brShort ? 1 : 0) + (useSD and sdShort ? 2 : 0) + (useOB and obShort ? 4 : 0) + (useFVG and fvgShort ? 8 : 0) + (useICT and ictShort ? 16 : 0) + (useMA and maShort ? 32 : 0)
+    int confL = (upTrend ? 1 : 0) + (bias == 1 ? 1 : 0) + (inKZ ? 1 : 0) + (close < mid ? 1 : 0) + (rsi > 40 and rsi < 70 ? 1 : 0)
+    int confS = (dnTrend ? 1 : 0) + (bias == -1 ? 1 : 0) + (inKZ ? 1 : 0) + (close > mid ? 1 : 0) + (rsi < 60 and rsi > 30 ? 1 : 0)
+    int scoreL = trigL + confL
+    int scoreS = trigS + confS
+    bool ready   = not na(atr) and not na(emaT) and not na(rsi)
+    bool longOK  = ready and trigL > 0 and scoreL >= minScore and (not needTrend or upTrend) and (not onlyKZ or inKZ)
+    bool shortOK = ready and trigS > 0 and scoreS >= minScore and (not needTrend or dnTrend) and (not onlyKZ or inKZ)
+    int sigDir = longOK and shortOK ? (scoreL > scoreS ? 1 : scoreS > scoreL ? -1 : 0) : longOK ? 1 : shortOK ? -1 : 0
+
+    // ── stop distance: beyond the recent swing, clamped by ATR
+    float riskL = math.min(math.max(close - (math.min(swLo, low) - slBuf * atr), slMinAtr * atr), slMaxAtr * atr)
+    float riskS = math.min(math.max((math.max(swHi, high) + slBuf * atr) - close, slMinAtr * atr), slMaxAtr * atr)
+
+    // ── trade manager
+    var int   tDir   = 0
+    var float tEntry = na
+    var float tSL    = na
+    var float tStop  = na
+    var float tTP1   = na
+    var float tTP2   = na
+    var float tTP3   = na
+    var int   tBar   = na
+    var int   tScore = 0
+    var int   tMask  = 0
+    var bool  hit1   = false
+    var bool  hit2   = false
+    var float tR     = 0.0
+    var int   wins   = 0
+    var int   losses = 0
+    var float netR   = 0.0
+    var int   lastOpenBar = na
+    bool  evOpen  = false
+    bool  evTP1   = false
+    bool  evTP2   = false
+    bool  evTP3   = false
+    bool  evClose = false
+    float exitPx  = na
+    float closedR = na
+
+    if tDir != 0 and bar_index > tBar
+        float risk   = math.abs(tEntry - tSL)
+        float fav    = tDir == 1 ? high : low
+        float adv    = tDir == 1 ? low : high
+        float remain = hit2 ? 1.0 / 3.0 : hit1 ? 2.0 / 3.0 : 1.0
+        // stop is checked first: when a candle touches both, assume the worst
+        if (adv - tStop) * tDir <= 0
+            tR      += remain * (tStop - tEntry) * tDir / risk
+            exitPx  := tStop
+            evClose := true
+        else
+            if not hit1 and (fav - tTP1) * tDir >= 0
+                hit1  := true
+                evTP1 := true
+                tR    += tp1RR / 3.0
+                if useBE
+                    tStop := tEntry
+            if hit1 and not hit2 and (fav - tTP2) * tDir >= 0
+                hit2  := true
+                evTP2 := true
+                tR    += tp2RR / 3.0
+                if useBE
+                    tStop := tTP1
+            if hit2 and (fav - tTP3) * tDir >= 0
+                evTP3   := true
+                tR      += tp3RR / 3.0
+                exitPx  := tTP3
+                evClose := true
+            if not evClose and bar_index - tBar >= maxBars
+                float remain2 = hit2 ? 1.0 / 3.0 : hit1 ? 2.0 / 3.0 : 1.0
+                tR      += remain2 * (close - tEntry) * tDir / risk
+                exitPx  := close
+                evClose := true
+        if evClose
+            closedR := tR
+            netR    += tR
+            if tR > 0
+                wins += 1
+            else
+                losses += 1
+            tDir := 0
+            hit1 := false
+            hit2 := false
+
+    if tDir == 0 and sigDir != 0
+        float risk0 = sigDir == 1 ? riskL : riskS
+        tDir        := sigDir
+        tEntry      := close
+        tSL         := close - risk0 * sigDir
+        tStop       := tSL
+        tTP1        := close + risk0 * tp1RR * sigDir
+        tTP2        := close + risk0 * tp2RR * sigDir
+        tTP3        := close + risk0 * tp3RR * sigDir
+        tBar        := bar_index
+        tScore      := sigDir == 1 ? scoreL : scoreS
+        tMask       := sigDir == 1 ? maskL : maskS
+        tR          := 0.0
+        evOpen      := true
+        lastOpenBar := bar_index
+
+    int trendDir  = upTrend ? 1 : dnTrend ? -1 : 0
+    int barsSince = na(lastOpenBar) ? -1 : bar_index - lastOpenBar
+    [tDir, tEntry, tSL, tStop, tTP1, tTP2, tTP3, tScore, tMask, hit1, hit2, evOpen, evTP1, evTP2, evTP3, evClose, exitPx, closedR, wins, losses, netR, trendDir, barsSince, dTop, dBot, sTop, sBot, obBT, obBB, obST, obSB, fBT, fBB, fST, fSB, brUp, brDn]
+
+// Slim wrappers for request.security()
+f_tfStats() =>
+    [a1, a2, a3, a4, a5, a6, a7, a8, a9, a10, a11, a12, a13, a14, a15, a16, a17, a18, a19, a20, a21, a22, a23, a24, a25, a26, a27, a28, a29, a30, a31, a32, a33, a34, a35, a36, a37] = f_engine()
+    [a19, a20, a21, a1]
+
+f_scan() =>
+    [a1, a2, a3, a4, a5, a6, a7, a8, a9, a10, a11, a12, a13, a14, a15, a16, a17, a18, a19, a20, a21, a22, a23, a24, a25, a26, a27, a28, a29, a30, a31, a32, a33, a34, a35, a36, a37] = f_engine()
+    [a1, a22, a19, a20, a23]
+
+
+// ═══════════════════════════════ RUN ON THIS CHART ═══════════════════════════════
+[tDir, tEntry, tSL, tStop, tTP1, tTP2, tTP3, tScore, tMask, hit1, hit2, evOpen, evTP1, evTP2, evTP3, evClose, exitPx, closedR, wins, losses, netR, trendDir, barsSince, zDT, zDB, zST, zSB, zOBT, zOBB, zOST, zOSB, zFBT, zFBB, zFST, zFSB, zBRU, zBRD] = f_engine()
+
+// Timeframe stats
+[w1, l1, r1, o1] = request.security(syminfo.tickerid, tf1, f_tfStats())
+[w2, l2, r2, o2] = request.security(syminfo.tickerid, tf2, f_tfStats())
+[w3, l3, r3, o3] = request.security(syminfo.tickerid, tf3, f_tfStats())
+[w4, l4, r4, o4] = request.security(syminfo.tickerid, tf4, f_tfStats())
+[w5, l5, r5, o5] = request.security(syminfo.tickerid, tf5, f_tfStats())
+
+// Pair scanner:  [open trade dir, trend, wins, losses, bars since entry]
+[k1d,  k1t,  k1w,  k1l,  k1b]  = request.security(sym1,  scanTF, f_scan())
+[k2d,  k2t,  k2w,  k2l,  k2b]  = request.security(sym2,  scanTF, f_scan())
+[k3d,  k3t,  k3w,  k3l,  k3b]  = request.security(sym3,  scanTF, f_scan())
+[k4d,  k4t,  k4w,  k4l,  k4b]  = request.security(sym4,  scanTF, f_scan())
+[k5d,  k5t,  k5w,  k5l,  k5b]  = request.security(sym5,  scanTF, f_scan())
+[k6d,  k6t,  k6w,  k6l,  k6b]  = request.security(sym6,  scanTF, f_scan())
+[k7d,  k7t,  k7w,  k7l,  k7b]  = request.security(sym7,  scanTF, f_scan())
+[k8d,  k8t,  k8w,  k8l,  k8b]  = request.security(sym8,  scanTF, f_scan())
+[k9d,  k9t,  k9w,  k9l,  k9b]  = request.security(sym9,  scanTF, f_scan())
+[k10d, k10t, k10w, k10l, k10b] = request.security(sym10, scanTF, f_scan())
+[k11d, k11t, k11w, k11l, k11b] = request.security(sym11, scanTF, f_scan())
+[k12d, k12t, k12w, k12l, k12b] = request.security(sym12, scanTF, f_scan())
+
+
+// ═══════════════════════════════ CHART VISUALS ═══════════════════════════════
+emaChart = ta.ema(close, trendLen)
+plot(showEMA ? emaChart : na, "Trend EMA", color=emaChart >= emaChart[1] ? color.new(cBull, 35) : color.new(cBear, 35), linewidth=2)
+
+nyHour = hour(time, "America/New_York")
+inKZChart = (nyHour >= 2 and nyHour < 5) or (nyHour >= 7 and nyHour < 10)
+bgcolor(showKZ and inKZChart ? color.new(cGold, 93) : na, title="Kill zone")
+
+type TradeDraw
+    line  lEntry
+    line  lSL
+    line  lTP1
+    line  lTP2
+    line  lTP3
+    box   bRisk
+    box   bReward
+    label lSig
+    label lRes
+
+method extendTo(TradeDraw d, int x) =>
+    d.lEntry.set_x2(x)
+    d.lSL.set_x2(x)
+    d.lTP1.set_x2(x)
+    d.lTP2.set_x2(x)
+    d.lTP3.set_x2(x)
+    d.bRisk.set_right(x)
+    d.bReward.set_right(x)
+
+method wipe(TradeDraw d) =>
+    line.delete(d.lEntry)
+    line.delete(d.lSL)
+    line.delete(d.lTP1)
+    line.delete(d.lTP2)
+    line.delete(d.lTP3)
+    box.delete(d.bRisk)
+    box.delete(d.bReward)
+    label.delete(d.lSig)
+    label.delete(d.lRes)
+
+var array<TradeDraw> hist = array.new<TradeDraw>()
+var TradeDraw cur = na
+
+// 1) update the open trade's drawing
+if not na(cur)
+    cur.extendTo(bar_index)
+    if evTP1
+        cur.lTP1.set_style(line.style_solid)
+        cur.lTP1.set_width(2)
+    if evTP2
+        cur.lTP2.set_style(line.style_solid)
+        cur.lTP2.set_width(2)
+    if evTP3
+        cur.lTP3.set_style(line.style_solid)
+        cur.lTP3.set_width(2)
+
+// 2) trade closed: stamp the result
+if evClose and not na(cur)
+    bool isWin = closedR > 0
+    cur.lRes := label.new(bar_index, exitPx, (isWin ? "✅ WIN " : "❌ LOSS ") + f_r(closedR), style=label.style_label_left, color=color.new(isWin ? cBull : cBear, 15), textcolor=isWin ? #04220F : color.white, size=size.small, tooltip="Closed at " + f_px(exitPx))
+    if showPast
+        hist.push(cur)
+        while hist.size() > maxDrawn
+            hist.shift().wipe()
+    else
+        cur.wipe()
+    cur := na
+
+// 3) new trade: draw entry / SL / TPs
+if evOpen
+    bool isL = tDir == 1
+    int x1 = bar_index
+    string grade = f_grade(tScore)
+    string tip = (isL ? "BUY " : "SELL ") + syminfo.ticker + "  ·  Grade " + grade + " (" + str.tostring(tScore) + "/" + str.tostring(maxScore) + ")\nSetup: " + f_names(tMask, " + ") + "\n\nEntry: " + f_px(tEntry) + "\nStop Loss: " + f_px(tSL) + "\nTP1: " + f_px(tTP1) + "\nTP2: " + f_px(tTP2) + "\nTP3: " + f_px(tTP3)
+    cur := TradeDraw.new(
+      lEntry  = line.new(x1, tEntry, x1 + 1, tEntry, color=cEntry, width=2),
+      lSL     = line.new(x1, tSL, x1 + 1, tSL, color=cSL, width=2),
+      lTP1    = line.new(x1, tTP1, x1 + 1, tTP1, color=cTP, width=1, style=line.style_dashed),
+      lTP2    = line.new(x1, tTP2, x1 + 1, tTP2, color=cTP, width=1, style=line.style_dashed),
+      lTP3    = line.new(x1, tTP3, x1 + 1, tTP3, color=cTP, width=1, style=line.style_dashed),
+      bRisk   = box.new(x1, math.max(tEntry, tSL), x1 + 1, math.min(tEntry, tSL), border_width=0, bgcolor=color.new(cSL, 88)),
+      bReward = box.new(x1, math.max(tEntry, tTP3), x1 + 1, math.min(tEntry, tTP3), border_width=0, bgcolor=color.new(cTP, 90)),
+      lSig    = label.new(x1, isL ? low : high, (isL ? "▲ BUY  " : "▼ SELL  ") + grade, yloc=isL ? yloc.belowbar : yloc.abovebar, style=isL ? label.style_label_up : label.style_label_down, color=isL ? cBull : cBear, textcolor=isL ? #04220F : color.white, size=size.normal, tooltip=tip),
+      lRes    = na)
+
+// 4) live price tags for the open trade (last bar only)
+var array<label> tags = array.new<label>()
+if barstate.islast
+    while tags.size() > 0
+        label.delete(tags.pop())
+    if tDir != 0 and not na(cur)
+        int xr = bar_index + 4
+        cur.extendTo(xr)
+        tags.push(label.new(xr, tEntry, "ENTRY  " + f_px(tEntry), style=label.style_label_left, color=cEntry, textcolor=#0E1320, size=size.small))
+        tags.push(label.new(xr, tSL, (tStop != tSL ? "STOP LOSS  " + f_px(tSL) + "  (now " + f_px(tStop) + " 🔒)" : "STOP LOSS  " + f_px(tSL)), style=label.style_label_left, color=cSL, textcolor=color.white, size=size.small))
+        tags.push(label.new(xr, tTP1, "TP1  " + f_px(tTP1) + (hit1 ? "  ✅" : ""), style=label.style_label_left, color=cTP, textcolor=#04220F, size=size.small))
+        tags.push(label.new(xr, tTP2, "TP2  " + f_px(tTP2) + (hit2 ? "  ✅" : ""), style=label.style_label_left, color=cTP, textcolor=#04220F, size=size.small))
+        tags.push(label.new(xr, tTP3, "TP3  " + f_px(tTP3), style=label.style_label_left, color=cTP, textcolor=#04220F, size=size.small))
+
+// 5) optional: active zones (last bar only)
+var array<box>  zoneBoxes = array.new<box>()
+var array<line> zoneLines = array.new<line>()
+
+f_zone(float top, float bot, color c, string txt) =>
+    box.new(bar_index - 30, top, bar_index + 10, bot, border_color=color.new(c, 55), bgcolor=color.new(c, 86), text=txt, text_color=c, text_size=size.tiny, text_halign=text.align_right, text_valign=text.align_center)
+
+if barstate.islast and showZones
+    while zoneBoxes.size() > 0
+        box.delete(zoneBoxes.pop())
+    while zoneLines.size() > 0
+        line.delete(zoneLines.pop())
+    if not na(zDT)
+        zoneBoxes.push(f_zone(zDT, zDB, cBull, "Demand"))
+    if not na(zST)
+        zoneBoxes.push(f_zone(zST, zSB, cBear, "Supply"))
+    if not na(zOBT)
+        zoneBoxes.push(f_zone(zOBT, zOBB, #26C6DA, "Bull OB"))
+    if not na(zOST)
+        zoneBoxes.push(f_zone(zOST, zOSB, #FF7043, "Bear OB"))
+    if not na(zFBT)
+        zoneBoxes.push(f_zone(zFBT, zFBB, #7C4DFF, "Bull FVG"))
+    if not na(zFST)
+        zoneBoxes.push(f_zone(zFST, zFSB, #E040FB, "Bear FVG"))
+    if not na(zBRU)
+        zoneLines.push(line.new(bar_index - 30, zBRU, bar_index + 10, zBRU, color=color.new(cBull, 30), style=line.style_dotted, width=1))
+    if not na(zBRD)
+        zoneLines.push(line.new(bar_index - 30, zBRD, bar_index + 10, zBRD, color=color.new(cBear, 30), style=line.style_dotted, width=1))
+
+
+// ═══════════════════════════════ DASHBOARD ═══════════════════════════════
+f_cell(table t, int c, int r, string s, color tc, color bg, string ha) =>
+    table.cell(t, c, r, s, text_color=tc, bgcolor=bg, text_size=txtSize, text_halign=ha)
+
+f_kv(table t, int r, string k, string v, color vc, color bg) =>
+    f_cell(t, 0, r, k, cMuted, bg, text.align_left)
+    f_cell(t, 1, r, v, vc, bg, text.align_left)
+    table.merge_cells(t, 1, r, 3, r)
+
+f_header(table t, int r, string s, color tc, color bg) =>
+    f_cell(t, 0, r, s, tc, bg, text.align_center)
+    table.merge_cells(t, 0, r, 3, r)
+
+var table dash = table.new(f_pos(dashPosIn), 4, 24, bgcolor=cBg, frame_color=cBorder, frame_width=1, border_color=cBorder, border_width=1)
+
+if barstate.islast and showDash
+    int   nTrades = wins + losses
+    float wr      = f_wr(wins, losses)
+    string tfTxt  = f_tfName(timeframe.period)
+    bool  live    = tDir != 0
+
+    f_header(dash, 0, "🎯  OLYMPUS SNIPER FX", cGold, cHead)
+
+    f_cell(dash, 0, 1, "PAIR", cMuted, cRow1, text.align_left)
+    f_cell(dash, 1, 1, syminfo.ticker, cText, cRow1, text.align_left)
+    f_cell(dash, 2, 1, "TIMEFRAME", cMuted, cRow1, text.align_left)
+    f_cell(dash, 3, 1, tfTxt, cText, cRow1, text.align_left)
+
+    string biasTxt = trendDir == 1 ? "▲ BULLISH · look for BUYS" : trendDir == -1 ? "▼ BEARISH · look for SELLS" : "◆ RANGING · be patient"
+    f_kv(dash, 2, "MARKET BIAS", biasTxt, trendDir == 1 ? cBull : trendDir == -1 ? cBear : cGold, cRow2)
+
+    string stTxt = tDir == 1 ? "🟢  BUY ACTIVE" : tDir == -1 ? "🔴  SELL ACTIVE" : "⏳  Waiting for a sniper setup…"
+    color  stBg  = tDir == 1 ? color.new(cBull, 70) : tDir == -1 ? color.new(cBear, 70) : cRow1
+    f_kv(dash, 3, "SIGNAL", stTxt, tDir == 0 ? cMuted : color.white, stBg)
+
+    f_kv(dash, 4, "⚪ ENTRY", live ? f_px(tEntry) : "—", cEntry, cRow2)
+    f_kv(dash, 5, "🔴 STOP LOSS", live ? (tStop != tSL ? f_px(tStop) + "  🔒 risk-free" : f_px(tSL)) : "—", cSL, cRow1)
+
+    f_cell(dash, 0, 6, "🟢 TP1", cMuted, cRow2, text.align_left)
+    f_cell(dash, 1, 6, live ? f_px(tTP1) + (hit1 ? " ✅" : "") : "—", cTP, cRow2, text.align_left)
+    f_cell(dash, 2, 6, "🟢 TP2", cMuted, cRow2, text.align_left)
+    f_cell(dash, 3, 6, live ? f_px(tTP2) + (hit2 ? " ✅" : "") : "—", cTP, cRow2, text.align_left)
+    f_cell(dash, 0, 7, "🟢 TP3", cMuted, cRow1, text.align_left)
+    f_cell(dash, 1, 7, live ? f_px(tTP3) : "—", cTP, cRow1, text.align_left)
+    f_cell(dash, 2, 7, "REWARD", cMuted, cRow1, text.align_left)
+    f_cell(dash, 3, 7, "1 : " + str.tostring(tp3RR, "0.#"), cText, cRow1, text.align_left)
+
+    f_kv(dash, 8, "SETUP", live ? f_names(tMask, " + ") : "—", cText, cRow2)
+    f_kv(dash, 9, "QUALITY", live ? f_grade(tScore) + "  " + f_stars(tScore) + "  (" + str.tostring(tScore) + "/" + str.tostring(maxScore) + ")" : "Mode: " + modeIn, cGold, cRow1)
+
+    f_header(dash, 10, "📊  PERFORMANCE · " + tfTxt, cText, cHead)
+    f_cell(dash, 0, 11, "TRADES", cMuted, cRow2, text.align_left)
+    f_cell(dash, 1, 11, str.tostring(nTrades), cText, cRow2, text.align_left)
+    f_cell(dash, 2, 11, "WIN RATE", cMuted, cRow2, text.align_left)
+    f_cell(dash, 3, 11, f_wrTxt(wr), f_wrCol(wr), cRow2, text.align_left)
+    f_cell(dash, 0, 12, "WINS", cMuted, cRow1, text.align_left)
+    f_cell(dash, 1, 12, str.tostring(wins), cBull, cRow1, text.align_left)
+    f_cell(dash, 2, 12, "LOSSES", cMuted, cRow1, text.align_left)
+    f_cell(dash, 3, 12, str.tostring(losses), cBear, cRow1, text.align_left)
+    f_kv(dash, 13, "NET PROFIT", f_r(netR) + "  (R = amount risked per trade)", netR >= 0 ? cBull : cBear, cRow2)
+
+    int row = 14
+    if showTF
+        f_header(dash, row, "⏱  WIN RATE BY TIMEFRAME", cText, cHead)
+        row += 1
+        f_cell(dash, 0, row, "TF", cMuted, cRow1, text.align_center)
+        f_cell(dash, 1, row, "TRADES", cMuted, cRow1, text.align_center)
+        f_cell(dash, 2, row, "WIN %", cMuted, cRow1, text.align_center)
+        f_cell(dash, 3, row, "NET", cMuted, cRow1, text.align_center)
+        row += 1
+        int chartSec = timeframe.in_seconds(timeframe.period)
+        tfs = array.from(f_tfName(tf1), f_tfName(tf2), f_tfName(tf3), f_tfName(tf4), f_tfName(tf5))
+        hs  = array.from(timeframe.in_seconds(tf1) == chartSec, timeframe.in_seconds(tf2) == chartSec, timeframe.in_seconds(tf3) == chartSec, timeframe.in_seconds(tf4) == chartSec, timeframe.in_seconds(tf5) == chartSec)
+        ws  = array.from(w1, w2, w3, w4, w5)
+        ls  = array.from(l1, l2, l3, l4, l5)
+        rs  = array.from(r1, r2, r3, r4, r5)
+        os  = array.from(o1, o2, o3, o4, o5)
+        for i = 0 to 4
+            string tfi  = tfs.get(i)
+            int    wi   = nz(ws.get(i))
+            int    li   = nz(ls.get(i))
+            float  wri  = f_wr(wi, li)
+            int    oi   = nz(os.get(i))
+            bool   here = hs.get(i)
+            color  bg   = here ? #243556 : (i % 2 == 0 ? cRow2 : cRow1)
+            string live_ = oi == 1 ? " 🟢" : oi == -1 ? " 🔴" : ""
+            f_cell(dash, 0, row, tfi + live_, cText, bg, text.align_center)
+            f_cell(dash, 1, row, str.tostring(wi + li), cText, bg, text.align_center)
+            f_cell(dash, 2, row, f_wrTxt(wri), f_wrCol(wri), bg, text.align_center)
+            f_cell(dash, 3, row, f_r(rs.get(i)), nz(rs.get(i)) >= 0 ? cBull : cBear, bg, text.align_center)
+            row += 1
+
+    f_header(dash, row, "⚪ Entry    🔴 Stop Loss    🟢 Take Profit", cMuted, cBg)
+
+
+// ═══════════════════════════════ PAIR SCANNER ═══════════════════════════════
+var table scan = table.new(f_pos(scanPosIn), 5, 15, bgcolor=cBg, frame_color=cBorder, frame_width=1, border_color=cBorder, border_width=1)
+
+if barstate.islast and showScan
+    syms = array.from(sym1, sym2, sym3, sym4, sym5, sym6, sym7, sym8, sym9, sym10, sym11, sym12)
+    ds   = array.from(k1d, k2d, k3d, k4d, k5d, k6d, k7d, k8d, k9d, k10d, k11d, k12d)
+    ts   = array.from(k1t, k2t, k3t, k4t, k5t, k6t, k7t, k8t, k9t, k10t, k11t, k12t)
+    ws   = array.from(k1w, k2w, k3w, k4w, k5w, k6w, k7w, k8w, k9w, k10w, k11w, k12w)
+    ls   = array.from(k1l, k2l, k3l, k4l, k5l, k6l, k7l, k8l, k9l, k10l, k11l, k12l)
+    bs   = array.from(k1b, k2b, k3b, k4b, k5b, k6b, k7b, k8b, k9b, k10b, k11b, k12b)
+
+    table.cell(scan, 0, 0, "📡  SNIPER SCANNER · " + f_tfName(scanTF), text_color=cGold, bgcolor=cHead, text_size=txtSize)
+    table.merge_cells(scan, 0, 0, 4, 0)
+    table.cell(scan, 0, 1, "PAIR",   text_color=cMuted, bgcolor=cRow1, text_size=txtSize)
+    table.cell(scan, 1, 1, "SIGNAL", text_color=cMuted, bgcolor=cRow1, text_size=txtSize)
+    table.cell(scan, 2, 1, "TREND",  text_color=cMuted, bgcolor=cRow1, text_size=txtSize)
+    table.cell(scan, 3, 1, "WIN %",  text_color=cMuted, bgcolor=cRow1, text_size=txtSize)
+    table.cell(scan, 4, 1, "AGE",    text_color=cMuted, bgcolor=cRow1, text_size=txtSize)
+
+    for i = 0 to 11
+        string name = f_short(syms.get(i))
+        int    d    = nz(ds.get(i))
+        int    tr   = nz(ts.get(i))
+        float  wri  = f_wr(ws.get(i), ls.get(i))
+        int    b    = nz(bs.get(i), -1)
+        bool   here = name == syminfo.ticker
+        color  bg   = here ? #243556 : (i % 2 == 0 ? cRow2 : cRow1)
+        string sig  = d == 1 ? "🟢 BUY" : d == -1 ? "🔴 SELL" : "· wait"
+        color  sigBg = d == 1 ? color.new(cBull, 72) : d == -1 ? color.new(cBear, 72) : bg
+        table.cell(scan, 0, i + 2, (here ? "▸ " : "") + name, text_color=cText, bgcolor=bg, text_size=txtSize, text_halign=text.align_left)
+        table.cell(scan, 1, i + 2, sig, text_color=d == 0 ? cMuted : color.white, bgcolor=sigBg, text_size=txtSize)
+        table.cell(scan, 2, i + 2, tr == 1 ? "▲ Bull" : tr == -1 ? "▼ Bear" : "◆ Range", text_color=tr == 1 ? cBull : tr == -1 ? cBear : cGold, bgcolor=bg, text_size=txtSize)
+        table.cell(scan, 3, i + 2, f_wrTxt(wri), text_color=f_wrCol(wri), bgcolor=bg, text_size=txtSize)
+        table.cell(scan, 4, i + 2, d != 0 and b >= 0 ? str.tostring(b) + " bars" : "—", text_color=cMuted, bgcolor=bg, text_size=txtSize)
+
+    table.cell(scan, 0, 14, "🟢/🔴 = trade is live on that pair · open its chart to see levels", text_color=cMuted, bgcolor=cBg, text_size=size.tiny)
+    table.merge_cells(scan, 0, 14, 4, 14)
+
+
+// ═══════════════════════════════ ALERTS ═══════════════════════════════
+// Format matches the Olympus bot parser:
+//   Olympus Sniper 🚀 BUY GBPUSD | 15 | ENTRY: x | SL: x | TP1: x | TP2: x | TP3: x | R:R 1:3
+if evOpen and alertEntries
+    string side = tDir == 1 ? "🚀 BUY " : "🔻 SELL "
+    string msg = "Olympus Sniper " + side + syminfo.ticker + " | " + timeframe.period + " | ENTRY: " + f_px(tEntry) + " | SL: " + f_px(tSL) + " | TP1: " + f_px(tTP1) + " | TP2: " + f_px(tTP2) + " | TP3: " + f_px(tTP3) + " | R:R 1:" + str.tostring(tp3RR, "0.#") + " | Grade " + f_grade(tScore) + " | " + f_names(tMask, " + ")
+    alert(msg, alert.freq_once_per_bar_close)
+
+if alertExits
+    if evTP1
+        alert("Olympus Sniper | " + syminfo.ticker + " | TP1 HIT ✅ | stop moved to entry", alert.freq_once_per_bar_close)
+    if evTP2
+        alert("Olympus Sniper | " + syminfo.ticker + " | TP2 HIT ✅", alert.freq_once_per_bar_close)
+    if evClose
+        alert("Olympus Sniper | " + syminfo.ticker + " | TRADE CLOSED " + f_r(closedR) + " at " + f_px(exitPx), alert.freq_once_per_bar_close)
+
+alertcondition(evOpen and tDir == 1,  "Sniper BUY",  "Olympus Sniper BUY {{ticker}} | {{interval}} | ENTRY: {{close}}")
+alertcondition(evOpen and tDir == -1, "Sniper SELL", "Olympus Sniper SELL {{ticker}} | {{interval}} | ENTRY: {{close}}")
