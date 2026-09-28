@@ -1,0 +1,72 @@
+[
+  {
+    "id": "aplus-core1-seed-0001",
+    "domain": "3",
+    "difficulty": 1,
+    "question": "Which RAID level mirrors data across two drives so that either drive can fail without data loss?",
+    "choices": [
+      "RAID 0",
+      "RAID 1",
+      "RAID 5",
+      "RAID 10"
+    ],
+    "answer": 1,
+    "explanation": "RAID 1 writes identical data to both drives. RAID 0 stripes data with no redundancy, RAID 5 needs at least three drives, and RAID 10 needs at least four."
+  },
+  {
+    "id": "aplus-core1-seed-0002",
+    "domain": "2",
+    "difficulty": 2,
+    "question": "Which copper cable category supports 10 Gbps Ethernet at the full 100-meter distance?",
+    "choices": [
+      "Cat 5e",
+      "Cat 6",
+      "Cat 6a",
+      "Cat 3"
+    ],
+    "answer": 2,
+    "explanation": "Cat 6a is rated for 10GBASE-T up to 100 m. Cat 6 supports 10 Gbps only up to about 55 m, and Cat 5e is rated for 1 Gbps."
+  },
+  {
+    "id": "aplus-core1-seed-0003",
+    "domain": "5",
+    "difficulty": 2,
+    "question": "A laptop display is very dark, but the image is faintly visible when a flashlight is shined on it. What is the most likely cause?",
+    "choices": [
+      "Failed GPU",
+      "Failed backlight or inverter",
+      "Incorrect resolution",
+      "Loose keyboard ribbon cable"
+    ],
+    "answer": 1,
+    "explanation": "A faint but visible image means the LCD is still drawing pixels while the illumination is gone. That points to the backlight (or the inverter on older CCFL panels)."
+  },
+  {
+    "id": "aplus-core1-seed-0004",
+    "domain": "4",
+    "difficulty": 1,
+    "question": "Which type of hypervisor runs directly on the host hardware without an underlying operating system?",
+    "choices": [
+      "Type 1",
+      "Type 2",
+      "Container runtime",
+      "Emulator"
+    ],
+    "answer": 0,
+    "explanation": "A Type 1 (bare-metal) hypervisor, such as ESXi or Hyper-V Server, runs directly on the hardware. A Type 2 hypervisor, such as VirtualBox, runs as an application on a host OS."
+  },
+  {
+    "id": "aplus-core1-seed-0005",
+    "domain": "2",
+    "difficulty": 1,
+    "question": "Which port must be allowed through a firewall to use Microsoft Remote Desktop Protocol?",
+    "choices": [
+      "22",
+      "443",
+      "3389",
+      "5900"
+    ],
+    "answer": 2,
+    "explanation": "RDP uses TCP/UDP 3389. VNC commonly uses 5900 and SSH uses 22."
+  }
+]

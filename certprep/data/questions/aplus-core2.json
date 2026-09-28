@@ -1,0 +1,72 @@
+[
+  {
+    "id": "aplus-core2-seed-0001",
+    "domain": "1",
+    "difficulty": 1,
+    "question": "Which Windows command scans and repairs protected system files?",
+    "choices": [
+      "chkdsk /f",
+      "sfc /scannow",
+      "gpupdate /force",
+      "diskpart"
+    ],
+    "answer": 1,
+    "explanation": "System File Checker (sfc /scannow) verifies protected system files and replaces corrupted ones. chkdsk checks the file system and disk, not Windows system files."
+  },
+  {
+    "id": "aplus-core2-seed-0002",
+    "domain": "2",
+    "difficulty": 1,
+    "question": "An unauthorized person follows an employee through a badge-controlled door without swiping. What is this called?",
+    "choices": [
+      "Shoulder surfing",
+      "Tailgating",
+      "Dumpster diving",
+      "Impersonation"
+    ],
+    "answer": 1,
+    "explanation": "Tailgating (also called piggybacking) is following an authorized person through a secured entrance. Access control vestibules (mantraps) and security awareness training help prevent it."
+  },
+  {
+    "id": "aplus-core2-seed-0003",
+    "domain": "2",
+    "difficulty": 2,
+    "question": "According to CompTIA's best-practice procedure for malware removal, what is the FIRST step?",
+    "choices": [
+      "Quarantine the infected system",
+      "Disable System Restore",
+      "Investigate and verify malware symptoms",
+      "Update anti-malware software"
+    ],
+    "answer": 2,
+    "explanation": "The order is: investigate and verify symptoms, quarantine, disable System Restore (Windows), remediate, schedule scans and updates, re-enable System Restore and create a restore point, then educate the end user."
+  },
+  {
+    "id": "aplus-core2-seed-0004",
+    "domain": "4",
+    "difficulty": 2,
+    "question": "Which element of a change request describes how to restore the system if the change fails?",
+    "choices": [
+      "Scope of change",
+      "Risk analysis",
+      "Backout (rollback) plan",
+      "End-user acceptance"
+    ],
+    "answer": 2,
+    "explanation": "A backout plan documents the steps to return to the previous working state if the change causes problems."
+  },
+  {
+    "id": "aplus-core2-seed-0005",
+    "domain": "3",
+    "difficulty": 1,
+    "question": "Which Windows tool is best for reviewing timestamped application crash errors?",
+    "choices": [
+      "Task Manager",
+      "Event Viewer",
+      "Device Manager",
+      "Disk Management"
+    ],
+    "answer": 1,
+    "explanation": "Event Viewer's Application and System logs record errors with timestamps, sources, and event IDs, so you can match crashes to their causes."
+  }
+]

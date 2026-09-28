@@ -1,0 +1,5 @@
+flask==3.0.3
+gunicorn==22.0.0
+stripe==15.6.1
+# only needed for tools/generate_questions.py
+anthropic

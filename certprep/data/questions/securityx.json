@@ -1,0 +1,58 @@
+[
+  {
+    "id": "securityx-seed-0001",
+    "domain": "2",
+    "difficulty": 2,
+    "question": "Which statement best reflects a zero trust architecture?",
+    "choices": [
+      "Users inside the corporate network are trusted by default",
+      "Every access request is continuously verified based on identity, device, and context",
+      "A strong perimeter firewall removes the need for internal controls",
+      "VPN access grants full network trust"
+    ],
+    "answer": 1,
+    "explanation": "Zero trust removes implicit trust based on network location. Each request is authenticated and authorized by a policy decision point using signals such as identity, device posture, and context."
+  },
+  {
+    "id": "securityx-seed-0002",
+    "domain": "1",
+    "difficulty": 2,
+    "question": "Under GDPR, within what time frame must a controller normally notify the supervisory authority of a qualifying personal data breach?",
+    "choices": [
+      "24 hours",
+      "72 hours",
+      "7 days",
+      "30 days"
+    ],
+    "answer": 1,
+    "explanation": "GDPR Article 33 requires notification without undue delay and, where feasible, within 72 hours of becoming aware of the breach."
+  },
+  {
+    "id": "securityx-seed-0003",
+    "domain": "3",
+    "difficulty": 2,
+    "question": "Which solution provides tamper-resistant hardware for generating and storing cryptographic keys for enterprise applications?",
+    "choices": [
+      "TPM",
+      "HSM",
+      "Secure enclave in a browser",
+      "Key escrow agreement"
+    ],
+    "answer": 1,
+    "explanation": "A Hardware Security Module (HSM) is a dedicated, tamper-resistant appliance or cloud service for enterprise key management. A TPM is a chip bound to a single device."
+  },
+  {
+    "id": "securityx-seed-0004",
+    "domain": "4",
+    "difficulty": 2,
+    "question": "What characterizes threat hunting as opposed to alert-driven monitoring?",
+    "choices": [
+      "It waits for SIEM alerts before acting",
+      "It is a proactive, hypothesis-driven search for threats that evaded existing controls",
+      "It is performed only after a breach is confirmed",
+      "It relies solely on antivirus signatures"
+    ],
+    "answer": 1,
+    "explanation": "Threat hunting starts from a hypothesis, often informed by threat intelligence or ATT&CK techniques, and proactively searches for adversary activity that automated detections missed."
+  }
+]

@@ -1,0 +1,72 @@
+[
+  {
+    "id": "cissp-seed-0001",
+    "domain": "1",
+    "difficulty": 3,
+    "question": "Senior management implements security controls after identifying risks. Implementing those reasonable protective measures is best described as:",
+    "choices": [
+      "Due diligence",
+      "Due care",
+      "Risk transference",
+      "Residual risk"
+    ],
+    "answer": 1,
+    "explanation": "Due diligence is investigating and understanding risks (knowing). Due care is acting on that knowledge by implementing reasonable protections (doing). A common summary: diligence is the research, care is the action."
+  },
+  {
+    "id": "cissp-seed-0002",
+    "domain": "2",
+    "difficulty": 2,
+    "question": "Who is ultimately responsible for determining the classification of a data asset?",
+    "choices": [
+      "Data custodian",
+      "Data owner",
+      "System administrator",
+      "Data processor"
+    ],
+    "answer": 1,
+    "explanation": "The data owner, usually a senior business manager, is accountable for classification and protection requirements. Custodians implement the controls day to day."
+  },
+  {
+    "id": "cissp-seed-0003",
+    "domain": "3",
+    "difficulty": 2,
+    "question": "The Bell-LaPadula model's 'no read up, no write down' rules primarily protect which property?",
+    "choices": [
+      "Integrity",
+      "Availability",
+      "Confidentiality",
+      "Accountability"
+    ],
+    "answer": 2,
+    "explanation": "Bell-LaPadula is a confidentiality model. Its simple security property is no read up, and its star property is no write down. Biba is the matching integrity model (no read down, no write up)."
+  },
+  {
+    "id": "cissp-seed-0004",
+    "domain": "5",
+    "difficulty": 2,
+    "question": "In Kerberos, which component issues the Ticket Granting Ticket (TGT)?",
+    "choices": [
+      "The file server",
+      "The Authentication Service of the KDC",
+      "The client workstation",
+      "The RADIUS server"
+    ],
+    "answer": 1,
+    "explanation": "The Key Distribution Center has an Authentication Service, which issues the TGT, and a Ticket Granting Service, which issues service tickets."
+  },
+  {
+    "id": "cissp-seed-0005",
+    "domain": "8",
+    "difficulty": 1,
+    "question": "Which testing approach analyzes application source code without executing it?",
+    "choices": [
+      "DAST",
+      "Fuzzing",
+      "SAST",
+      "Penetration testing"
+    ],
+    "answer": 2,
+    "explanation": "Static Application Security Testing (SAST) examines source or compiled code at rest. DAST and fuzzing test the running application."
+  }
+]

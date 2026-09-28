@@ -1,0 +1,142 @@
+[
+  {
+    "id": "aplus-core1", "vendor": "CompTIA", "name": "A+ Core 1", "code": "220-1201",
+    "exam": {"questions": 90, "minutes": 90, "passing": "675 / 900"},
+    "domains": [
+      {"id": "1", "name": "Mobile Devices", "weight": 13},
+      {"id": "2", "name": "Networking", "weight": 23},
+      {"id": "3", "name": "Hardware", "weight": 25},
+      {"id": "4", "name": "Virtualization and Cloud Computing", "weight": 11},
+      {"id": "5", "name": "Hardware and Network Troubleshooting", "weight": 28}
+    ]
+  },
+  {
+    "id": "aplus-core2", "vendor": "CompTIA", "name": "A+ Core 2", "code": "220-1202",
+    "exam": {"questions": 90, "minutes": 90, "passing": "700 / 900"},
+    "domains": [
+      {"id": "1", "name": "Operating Systems", "weight": 28},
+      {"id": "2", "name": "Security", "weight": 28},
+      {"id": "3", "name": "Software Troubleshooting", "weight": 23},
+      {"id": "4", "name": "Operational Procedures", "weight": 21}
+    ]
+  },
+  {
+    "id": "netplus", "vendor": "CompTIA", "name": "Network+", "code": "N10-009",
+    "exam": {"questions": 90, "minutes": 90, "passing": "720 / 900"},
+    "domains": [
+      {"id": "1", "name": "Networking Concepts", "weight": 23},
+      {"id": "2", "name": "Network Implementation", "weight": 20},
+      {"id": "3", "name": "Network Operations", "weight": 19},
+      {"id": "4", "name": "Network Security", "weight": 14},
+      {"id": "5", "name": "Network Troubleshooting", "weight": 24}
+    ]
+  },
+  {
+    "id": "secplus", "vendor": "CompTIA", "name": "Security+", "code": "SY0-701",
+    "exam": {"questions": 90, "minutes": 90, "passing": "750 / 900"},
+    "domains": [
+      {"id": "1", "name": "General Security Concepts", "weight": 12},
+      {"id": "2", "name": "Threats, Vulnerabilities, and Mitigations", "weight": 22},
+      {"id": "3", "name": "Security Architecture", "weight": 18},
+      {"id": "4", "name": "Security Operations", "weight": 28},
+      {"id": "5", "name": "Security Program Management and Oversight", "weight": 20}
+    ]
+  },
+  {
+    "id": "cysa", "vendor": "CompTIA", "name": "CySA+", "code": "CS0-003",
+    "exam": {"questions": 85, "minutes": 165, "passing": "750 / 900"},
+    "domains": [
+      {"id": "1", "name": "Security Operations", "weight": 33},
+      {"id": "2", "name": "Vulnerability Management", "weight": 30},
+      {"id": "3", "name": "Incident Response and Management", "weight": 20},
+      {"id": "4", "name": "Reporting and Communication", "weight": 17}
+    ]
+  },
+  {
+    "id": "pentest", "vendor": "CompTIA", "name": "PenTest+", "code": "PT0-003",
+    "exam": {"questions": 90, "minutes": 165, "passing": "750 / 900"},
+    "domains": [
+      {"id": "1", "name": "Engagement Management", "weight": 13},
+      {"id": "2", "name": "Reconnaissance and Enumeration", "weight": 21},
+      {"id": "3", "name": "Vulnerability Discovery and Analysis", "weight": 17},
+      {"id": "4", "name": "Attacks and Exploits", "weight": 35},
+      {"id": "5", "name": "Post-exploitation and Lateral Movement", "weight": 14}
+    ]
+  },
+  {
+    "id": "securityx", "vendor": "CompTIA", "name": "SecurityX (formerly CASP+)", "code": "CAS-005",
+    "exam": {"questions": 90, "minutes": 165, "passing": "Pass / Fail"},
+    "domains": [
+      {"id": "1", "name": "Governance, Risk, and Compliance", "weight": 20},
+      {"id": "2", "name": "Security Architecture", "weight": 27},
+      {"id": "3", "name": "Security Engineering", "weight": 31},
+      {"id": "4", "name": "Security Operations", "weight": 22}
+    ]
+  },
+  {
+    "id": "isc2-cc", "vendor": "ISC2", "name": "Certified in Cybersecurity (CC)", "code": "CC",
+    "exam": {"questions": 100, "minutes": 120, "passing": "700 / 1000"},
+    "domains": [
+      {"id": "1", "name": "Security Principles", "weight": 26},
+      {"id": "2", "name": "Business Continuity, Disaster Recovery, and Incident Response", "weight": 10},
+      {"id": "3", "name": "Access Control Concepts", "weight": 22},
+      {"id": "4", "name": "Network Security", "weight": 24},
+      {"id": "5", "name": "Security Operations", "weight": 18}
+    ]
+  },
+  {
+    "id": "cissp", "vendor": "ISC2", "name": "CISSP", "code": "CISSP",
+    "exam": {"questions": 125, "minutes": 180, "passing": "700 / 1000"},
+    "domains": [
+      {"id": "1", "name": "Security and Risk Management", "weight": 16},
+      {"id": "2", "name": "Asset Security", "weight": 10},
+      {"id": "3", "name": "Security Architecture and Engineering", "weight": 13},
+      {"id": "4", "name": "Communication and Network Security", "weight": 13},
+      {"id": "5", "name": "Identity and Access Management", "weight": 13},
+      {"id": "6", "name": "Security Assessment and Testing", "weight": 12},
+      {"id": "7", "name": "Security Operations", "weight": 13},
+      {"id": "8", "name": "Software Development Security", "weight": 10}
+    ]
+  },
+  {
+    "id": "ccna", "vendor": "Cisco", "name": "CCNA", "code": "200-301",
+    "exam": {"questions": 100, "minutes": 120, "passing": "Not published"},
+    "domains": [
+      {"id": "1", "name": "Network Fundamentals", "weight": 20},
+      {"id": "2", "name": "Network Access", "weight": 20},
+      {"id": "3", "name": "IP Connectivity", "weight": 25},
+      {"id": "4", "name": "IP Services", "weight": 10},
+      {"id": "5", "name": "Security Fundamentals", "weight": 15},
+      {"id": "6", "name": "Automation and Programmability", "weight": 10}
+    ]
+  },
+  {
+    "id": "aws-ccp", "vendor": "AWS", "name": "Cloud Practitioner", "code": "CLF-C02",
+    "exam": {"questions": 65, "minutes": 90, "passing": "700 / 1000"},
+    "domains": [
+      {"id": "1", "name": "Cloud Concepts", "weight": 24},
+      {"id": "2", "name": "Security and Compliance", "weight": 30},
+      {"id": "3", "name": "Cloud Technology and Services", "weight": 34},
+      {"id": "4", "name": "Billing, Pricing, and Support", "weight": 12}
+    ]
+  },
+  {
+    "id": "aws-saa", "vendor": "AWS", "name": "Solutions Architect – Associate", "code": "SAA-C03",
+    "exam": {"questions": 65, "minutes": 130, "passing": "720 / 1000"},
+    "domains": [
+      {"id": "1", "name": "Design Secure Architectures", "weight": 30},
+      {"id": "2", "name": "Design Resilient Architectures", "weight": 26},
+      {"id": "3", "name": "Design High-Performing Architectures", "weight": 24},
+      {"id": "4", "name": "Design Cost-Optimized Architectures", "weight": 20}
+    ]
+  },
+  {
+    "id": "az-900", "vendor": "Microsoft", "name": "Azure Fundamentals", "code": "AZ-900",
+    "exam": {"questions": 50, "minutes": 45, "passing": "700 / 1000"},
+    "domains": [
+      {"id": "1", "name": "Cloud Concepts", "weight": 27},
+      {"id": "2", "name": "Azure Architecture and Services", "weight": 38},
+      {"id": "3", "name": "Azure Management and Governance", "weight": 35}
+    ]
+  }
+]

@@ -1,0 +1,72 @@
+[
+  {
+    "id": "isc2-cc-seed-0001",
+    "domain": "1",
+    "difficulty": 1,
+    "question": "A DDoS attack takes a company's website offline. Which element of the CIA triad is primarily affected?",
+    "choices": [
+      "Confidentiality",
+      "Integrity",
+      "Availability",
+      "Non-repudiation"
+    ],
+    "answer": 2,
+    "explanation": "A DDoS attack overwhelms resources so legitimate users can't reach them, which is an attack on availability."
+  },
+  {
+    "id": "isc2-cc-seed-0002",
+    "domain": "2",
+    "difficulty": 2,
+    "question": "What is the primary focus of a disaster recovery plan (DRP)?",
+    "choices": [
+      "Keeping all business functions operating during a disruption",
+      "Restoring IT systems and infrastructure after a disruption",
+      "Identifying security incidents",
+      "Training employees on phishing"
+    ],
+    "answer": 1,
+    "explanation": "A DRP focuses on restoring IT systems and data. The broader business continuity plan (BCP) keeps critical business functions running."
+  },
+  {
+    "id": "isc2-cc-seed-0003",
+    "domain": "3",
+    "difficulty": 2,
+    "question": "Which access control model assigns security labels to objects and clearances to subjects, enforced by the system rather than the owner?",
+    "choices": [
+      "DAC",
+      "MAC",
+      "RBAC",
+      "ABAC"
+    ],
+    "answer": 1,
+    "explanation": "Mandatory Access Control (MAC) uses labels and clearances set centrally by the system. In DAC, the owner decides who gets access."
+  },
+  {
+    "id": "isc2-cc-seed-0004",
+    "domain": "4",
+    "difficulty": 1,
+    "question": "Which default port does DNS use for standard queries?",
+    "choices": [
+      "25",
+      "53",
+      "110",
+      "161"
+    ],
+    "answer": 1,
+    "explanation": "DNS uses port 53, over UDP for most queries and TCP for zone transfers and large responses. SMTP uses 25, POP3 uses 110, and SNMP uses 161."
+  },
+  {
+    "id": "isc2-cc-seed-0005",
+    "domain": "5",
+    "difficulty": 2,
+    "question": "Why is time synchronization (for example, NTP) important for security logging?",
+    "choices": [
+      "It encrypts log files",
+      "It lets events from different systems be correlated accurately",
+      "It reduces log storage size",
+      "It prevents log deletion"
+    ],
+    "answer": 1,
+    "explanation": "Consistent timestamps across systems are essential for correlating events and reconstructing an incident timeline."
+  }
+]

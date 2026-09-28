@@ -1,0 +1,58 @@
+[
+  {
+    "id": "aws-saa-seed-0001",
+    "domain": "2",
+    "difficulty": 2,
+    "question": "A company needs its Amazon RDS database to fail over automatically if the primary Availability Zone fails. What should the architect enable?",
+    "choices": [
+      "Read replicas in the same AZ",
+      "RDS Multi-AZ deployment",
+      "Automated backups only",
+      "A larger instance class"
+    ],
+    "answer": 1,
+    "explanation": "Multi-AZ keeps a synchronous standby in another AZ and fails over automatically. Read replicas scale reads and use asynchronous replication."
+  },
+  {
+    "id": "aws-saa-seed-0002",
+    "domain": "1",
+    "difficulty": 1,
+    "question": "What is the most secure way for an application on EC2 to access an S3 bucket?",
+    "choices": [
+      "Store access keys in the application config file",
+      "Attach an IAM role to the EC2 instance",
+      "Make the bucket public",
+      "Embed root credentials in user data"
+    ],
+    "answer": 1,
+    "explanation": "An IAM role (through an instance profile) provides temporary, automatically rotated credentials, so no long-term keys are stored on the instance."
+  },
+  {
+    "id": "aws-saa-seed-0003",
+    "domain": "4",
+    "difficulty": 2,
+    "question": "Data is accessed rarely but must be retrievable in milliseconds when needed. Which S3 storage class is most cost-effective?",
+    "choices": [
+      "S3 Standard",
+      "S3 Standard-IA",
+      "S3 Glacier Deep Archive",
+      "S3 Glacier Flexible Retrieval"
+    ],
+    "answer": 1,
+    "explanation": "Standard-IA offers millisecond access at lower storage cost for infrequently accessed data, with a per-GB retrieval fee. The Glacier Flexible and Deep Archive tiers take minutes to hours to retrieve."
+  },
+  {
+    "id": "aws-saa-seed-0004",
+    "domain": "3",
+    "difficulty": 2,
+    "question": "Which service best decouples a web tier from a backend processing tier so bursts of requests don't overwhelm the workers?",
+    "choices": [
+      "Amazon SQS",
+      "Amazon Route 53",
+      "AWS Direct Connect",
+      "Amazon CloudFront"
+    ],
+    "answer": 0,
+    "explanation": "An SQS queue buffers messages so workers process them at their own pace, which absorbs traffic spikes and decouples the components."
+  }
+]

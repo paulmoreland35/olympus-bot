@@ -1,0 +1,58 @@
+[
+  {
+    "id": "cysa-seed-0001",
+    "domain": "1",
+    "difficulty": 1,
+    "question": "What is the main benefit of a SOAR platform in a SOC?",
+    "choices": [
+      "It replaces the need for a SIEM",
+      "It automates and orchestrates repeatable response workflows through playbooks",
+      "It provides full-disk encryption for endpoints",
+      "It performs static code analysis"
+    ],
+    "answer": 1,
+    "explanation": "Security Orchestration, Automation, and Response (SOAR) runs playbooks that tie tools together and automate repetitive triage and response steps, which lowers response time and analyst fatigue."
+  },
+  {
+    "id": "cysa-seed-0002",
+    "domain": "2",
+    "difficulty": 2,
+    "question": "A vulnerability's CVSS v3.1 vector includes AV:N. What does this indicate?",
+    "choices": [
+      "It requires physical access",
+      "It can be exploited remotely over the network",
+      "It requires user interaction",
+      "It has no impact on confidentiality"
+    ],
+    "answer": 1,
+    "explanation": "AV is Attack Vector. N (Network) means the vulnerability can be exploited remotely across the network, which raises the base score. The other values are Adjacent (A), Local (L), and Physical (P)."
+  },
+  {
+    "id": "cysa-seed-0003",
+    "domain": "3",
+    "difficulty": 2,
+    "question": "Following the order of volatility, which evidence should an analyst collect FIRST from a live compromised host?",
+    "choices": [
+      "Hard disk image",
+      "System memory (RAM)",
+      "Archived backups",
+      "Printed configuration documentation"
+    ],
+    "answer": 1,
+    "explanation": "RAM is lost when the system powers off, so it is captured before less volatile sources such as disk images and backups."
+  },
+  {
+    "id": "cysa-seed-0004",
+    "domain": "4",
+    "difficulty": 1,
+    "question": "Which metric reports the average time taken to resolve incidents after they are detected?",
+    "choices": [
+      "MTTD",
+      "MTTR",
+      "RTO",
+      "SLA"
+    ],
+    "answer": 1,
+    "explanation": "Mean Time to Respond/Recover (MTTR) measures how quickly incidents are resolved. Mean Time to Detect (MTTD) measures how long it takes to discover them."
+  }
+]

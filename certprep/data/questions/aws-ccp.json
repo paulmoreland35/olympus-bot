@@ -1,0 +1,58 @@
+[
+  {
+    "id": "aws-ccp-seed-0001",
+    "domain": "2",
+    "difficulty": 1,
+    "question": "Under the AWS shared responsibility model, which task is AWS responsible for?",
+    "choices": [
+      "Configuring security groups",
+      "Physical security of data centers",
+      "Encrypting customer data in S3",
+      "Managing IAM user passwords"
+    ],
+    "answer": 1,
+    "explanation": "AWS is responsible for security OF the cloud: facilities, hardware, and global infrastructure. Customers are responsible for security IN the cloud: configuration, IAM, and data protection."
+  },
+  {
+    "id": "aws-ccp-seed-0002",
+    "domain": "3",
+    "difficulty": 1,
+    "question": "Which AWS service provides durable object storage?",
+    "choices": [
+      "Amazon EBS",
+      "Amazon S3",
+      "Amazon EFS",
+      "AWS Storage Gateway"
+    ],
+    "answer": 1,
+    "explanation": "Amazon S3 is object storage designed for 11 nines of durability. EBS provides block storage and EFS provides a managed file system."
+  },
+  {
+    "id": "aws-ccp-seed-0003",
+    "domain": "4",
+    "difficulty": 2,
+    "question": "Which EC2 purchasing option offers the largest discount for workloads that can tolerate interruption?",
+    "choices": [
+      "On-Demand",
+      "Reserved Instances",
+      "Spot Instances",
+      "Dedicated Hosts"
+    ],
+    "answer": 2,
+    "explanation": "Spot Instances use spare capacity at up to about 90% off On-Demand prices, but AWS can reclaim them with a two-minute warning."
+  },
+  {
+    "id": "aws-ccp-seed-0004",
+    "domain": "1",
+    "difficulty": 1,
+    "question": "The ability to automatically add and remove resources to match demand is called:",
+    "choices": [
+      "Elasticity",
+      "Durability",
+      "Fault tolerance",
+      "Agility"
+    ],
+    "answer": 0,
+    "explanation": "Elasticity means scaling resources out and in automatically as demand changes, so you pay only for what you need."
+  }
+]

@@ -1,0 +1,100 @@
+[
+  {
+    "id": "secplus-seed-0001",
+    "domain": "1",
+    "difficulty": 1,
+    "question": "What is the primary purpose of running a file through a hashing algorithm such as SHA-256 before and after transfer?",
+    "choices": [
+      "To encrypt the file so only the recipient can read it",
+      "To verify the file's integrity has not changed",
+      "To compress the file for faster transfer",
+      "To prove the sender's identity without a certificate"
+    ],
+    "answer": 1,
+    "explanation": "Hashing produces a fixed-length digest. If the digests before and after transfer match, the file was not altered, which verifies integrity. Hashing is one-way and provides no confidentiality; proving identity requires a digital signature."
+  },
+  {
+    "id": "secplus-seed-0002",
+    "domain": "2",
+    "difficulty": 1,
+    "question": "An employee receives a text message claiming to be from the bank and asking them to tap a link to 'unlock' their account. What type of attack is this?",
+    "choices": [
+      "Vishing",
+      "Whaling",
+      "Smishing",
+      "Pharming"
+    ],
+    "answer": 2,
+    "explanation": "Smishing is phishing delivered by SMS. Vishing uses voice calls, whaling targets executives, and pharming redirects users to a fake site through DNS or hosts-file manipulation."
+  },
+  {
+    "id": "secplus-seed-0003",
+    "domain": "4",
+    "difficulty": 2,
+    "question": "A security team has just contained a ransomware outbreak by isolating the affected hosts. Which incident response phase should come next?",
+    "choices": [
+      "Preparation",
+      "Eradication",
+      "Lessons learned",
+      "Detection"
+    ],
+    "answer": 1,
+    "explanation": "The sequence is preparation, detection, analysis, containment, eradication, recovery, and lessons learned. Once the threat is contained, eradication removes the malware and its persistence before systems are recovered."
+  },
+  {
+    "id": "secplus-seed-0004",
+    "domain": "4",
+    "difficulty": 1,
+    "question": "A new help desk technician is granted only the permissions needed to reset passwords and nothing more. Which principle is being applied?",
+    "choices": [
+      "Separation of duties",
+      "Least privilege",
+      "Implicit trust",
+      "Job rotation"
+    ],
+    "answer": 1,
+    "explanation": "Least privilege grants the minimum access required to do a job. Separation of duties splits a critical task among several people so no single person can complete it alone."
+  },
+  {
+    "id": "secplus-seed-0005",
+    "domain": "5",
+    "difficulty": 2,
+    "question": "During a business impact analysis, management states the company can lose at most 4 hours of transaction data. Which metric does this define?",
+    "choices": [
+      "Recovery time objective (RTO)",
+      "Mean time to repair (MTTR)",
+      "Recovery point objective (RPO)",
+      "Mean time between failures (MTBF)"
+    ],
+    "answer": 2,
+    "explanation": "RPO is the maximum acceptable data loss, measured backward in time from an incident, and it drives backup frequency. RTO is how long the business can tolerate a system being down."
+  },
+  {
+    "id": "secplus-seed-0006",
+    "domain": "3",
+    "difficulty": 2,
+    "question": "In which cloud service model is the customer responsible for patching the guest operating system?",
+    "choices": [
+      "SaaS",
+      "PaaS",
+      "IaaS",
+      "All three equally"
+    ],
+    "answer": 2,
+    "explanation": "In IaaS the provider manages the physical hosts and hypervisor, while the customer manages the OS, applications, and data. In PaaS and SaaS the provider manages the OS."
+  },
+  {
+    "id": "secplus-seed-0007",
+    "domain": "2",
+    "difficulty": 2,
+    "question": "Which control most directly mitigates SQL injection in a web application?",
+    "choices": [
+      "Parameterized queries (prepared statements)",
+      "Enforcing TLS 1.3",
+      "Web server log rotation",
+      "Account lockout policies"
+    ],
+    "answer": 0,
+    "explanation": "Parameterized queries keep user input separate from SQL code, so the input can't change the query's structure. TLS protects data in transit but does nothing about injection."
+  }
+]

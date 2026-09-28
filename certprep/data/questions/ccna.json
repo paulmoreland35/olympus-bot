@@ -1,0 +1,72 @@
+[
+  {
+    "id": "ccna-seed-0001",
+    "domain": "3",
+    "difficulty": 2,
+    "question": "What is the default administrative distance of OSPF on a Cisco router?",
+    "choices": [
+      "90",
+      "100",
+      "110",
+      "120"
+    ],
+    "answer": 2,
+    "explanation": "OSPF's AD is 110. EIGRP internal is 90, IS-IS is 115, RIP is 120, and static routes are 1."
+  },
+  {
+    "id": "ccna-seed-0002",
+    "domain": "2",
+    "difficulty": 2,
+    "question": "On an 802.1Q trunk, how is traffic for the native VLAN handled by default?",
+    "choices": [
+      "It is dropped",
+      "It is sent untagged",
+      "It is double-tagged",
+      "It is encrypted"
+    ],
+    "answer": 1,
+    "explanation": "Native VLAN frames are sent untagged on an 802.1Q trunk. A native VLAN mismatch between the two ends causes problems and is a VLAN-hopping concern."
+  },
+  {
+    "id": "ccna-seed-0003",
+    "domain": "4",
+    "difficulty": 1,
+    "question": "Which NAT type maps many inside private addresses to a single public address using different port numbers?",
+    "choices": [
+      "Static NAT",
+      "Dynamic NAT",
+      "PAT (NAT overload)",
+      "NAT64"
+    ],
+    "answer": 2,
+    "explanation": "Port Address Translation (NAT overload) tracks sessions by source port, so many hosts can share one public IP."
+  },
+  {
+    "id": "ccna-seed-0004",
+    "domain": "6",
+    "difficulty": 1,
+    "question": "Which data format is most commonly used in REST API payloads for network automation?",
+    "choices": [
+      "JSON",
+      "CSV",
+      "SNMP MIB",
+      "Syslog"
+    ],
+    "answer": 0,
+    "explanation": "REST APIs, including controller-based networking APIs, typically exchange JSON (and sometimes XML) payloads."
+  },
+  {
+    "id": "ccna-seed-0005",
+    "domain": "5",
+    "difficulty": 2,
+    "question": "What is the default violation mode for Cisco switch port security?",
+    "choices": [
+      "Protect",
+      "Restrict",
+      "Shutdown",
+      "Log-only"
+    ],
+    "answer": 2,
+    "explanation": "The default mode is shutdown: the port goes err-disabled when a violation occurs. Protect drops the frames silently, and restrict drops them while logging and incrementing a counter."
+  }
+]

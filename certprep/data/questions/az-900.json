@@ -1,0 +1,58 @@
+[
+  {
+    "id": "az-900-seed-0001",
+    "domain": "2",
+    "difficulty": 1,
+    "question": "Which Azure construct is a logical container for resources that share the same lifecycle?",
+    "choices": [
+      "Management group",
+      "Subscription",
+      "Resource group",
+      "Availability set"
+    ],
+    "answer": 2,
+    "explanation": "Resource groups hold related resources that are deployed, managed, and deleted together. The hierarchy is management groups > subscriptions > resource groups > resources."
+  },
+  {
+    "id": "az-900-seed-0002",
+    "domain": "1",
+    "difficulty": 1,
+    "question": "Consumption-based cloud pricing is an example of which type of expenditure?",
+    "choices": [
+      "Capital expenditure (CapEx)",
+      "Operational expenditure (OpEx)",
+      "Depreciation",
+      "Fixed cost"
+    ],
+    "answer": 1,
+    "explanation": "Paying for cloud resources as you use them is OpEx. Buying servers up front is CapEx."
+  },
+  {
+    "id": "az-900-seed-0003",
+    "domain": "3",
+    "difficulty": 2,
+    "question": "Which Azure service can enforce a rule that resources may be deployed only in specific regions?",
+    "choices": [
+      "Azure Policy",
+      "Azure Advisor",
+      "Microsoft Defender for Cloud",
+      "Azure Monitor"
+    ],
+    "answer": 0,
+    "explanation": "Azure Policy evaluates and enforces rules on resources, such as allowed locations or required tags. Advisor only gives recommendations."
+  },
+  {
+    "id": "az-900-seed-0004",
+    "domain": "2",
+    "difficulty": 1,
+    "question": "What are Azure Availability Zones?",
+    "choices": [
+      "Separate Azure regions in different countries",
+      "Physically separate datacenters within a single Azure region",
+      "Racks within one datacenter",
+      "Edge locations for CDN caching"
+    ],
+    "answer": 1,
+    "explanation": "Availability Zones are physically separate locations within a region, each with independent power, cooling, and networking, which protects against datacenter-level failures."
+  }
+]

@@ -1,0 +1,86 @@
+[
+  {
+    "id": "netplus-seed-0001",
+    "domain": "1",
+    "difficulty": 1,
+    "question": "Which well-known port does SSH use by default?",
+    "choices": [
+      "21",
+      "22",
+      "23",
+      "3389"
+    ],
+    "answer": 1,
+    "explanation": "SSH uses TCP 22. FTP control uses 21, Telnet uses 23, and RDP uses 3389."
+  },
+  {
+    "id": "netplus-seed-0002",
+    "domain": "1",
+    "difficulty": 1,
+    "question": "At which OSI layer does a traditional switch make forwarding decisions based on MAC addresses?",
+    "choices": [
+      "Layer 1",
+      "Layer 2",
+      "Layer 3",
+      "Layer 4"
+    ],
+    "answer": 1,
+    "explanation": "A Layer 2 switch forwards frames using its MAC address table. Routers and Layer 3 switches make decisions using IP addresses at Layer 3."
+  },
+  {
+    "id": "netplus-seed-0003",
+    "domain": "5",
+    "difficulty": 2,
+    "question": "Several workstations report IP addresses in the 169.254.0.0/16 range. What is the most likely cause?",
+    "choices": [
+      "A duplicate IP address on the network",
+      "The workstations cannot reach a DHCP server",
+      "The DNS server is down",
+      "The default gateway is misconfigured"
+    ],
+    "answer": 1,
+    "explanation": "169.254.x.x is an APIPA (link-local) address, which Windows assigns itself when no DHCP server responds. DNS or gateway problems would not change the address the host is assigned."
+  },
+  {
+    "id": "netplus-seed-0004",
+    "domain": "2",
+    "difficulty": 2,
+    "question": "Which protocol prevents Layer 2 switching loops by blocking redundant paths?",
+    "choices": [
+      "OSPF",
+      "VRRP",
+      "Spanning Tree Protocol",
+      "LACP"
+    ],
+    "answer": 2,
+    "explanation": "STP (IEEE 802.1D, and RSTP 802.1w) elects a root bridge and places redundant ports in a blocking state. LACP bundles links, VRRP provides gateway redundancy, and OSPF is a Layer 3 routing protocol."
+  },
+  {
+    "id": "netplus-seed-0005",
+    "domain": "1",
+    "difficulty": 2,
+    "question": "How many usable host addresses are available in a /26 IPv4 subnet?",
+    "choices": [
+      "30",
+      "62",
+      "64",
+      "126"
+    ],
+    "answer": 1,
+    "explanation": "A /26 leaves 6 host bits: 2^6 = 64 addresses. Subtract the network and broadcast addresses to get 62 usable hosts."
+  },
+  {
+    "id": "netplus-seed-0006",
+    "domain": "5",
+    "difficulty": 1,
+    "question": "According to the CompTIA troubleshooting methodology, what is the FIRST step?",
+    "choices": [
+      "Establish a theory of probable cause",
+      "Identify the problem",
+      "Test the theory",
+      "Document findings"
+    ],
+    "answer": 1,
+    "explanation": "The steps are: identify the problem, establish a theory, test the theory, establish a plan of action, implement the solution, verify full functionality, and document findings."
+  }
+]
