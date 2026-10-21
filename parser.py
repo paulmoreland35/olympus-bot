@@ -123,16 +123,18 @@ def parse_olympus_message(message: str) -> dict:
     msg = message.strip()
     logger.info(f"Parsing Olympus message: {msg}")
 
-    # ---- Direction (BUY / SELL) ----------------------------------------
-    action_match = re.search(r'\b(BUY|SELL)\b', msg, re.IGNORECASE)
+    # ---- Direction (BUY / SELL, or LONG / SHORT as synonyms) -----------
+    action_match = re.search(r'\b(BUY|SELL|LONG|SHORT)\b', msg, re.IGNORECASE)
     if not action_match:
         raise ValueError(f"Could not find BUY/SELL in message: {msg}")
-    action = action_match.group(1).lower()
+    _ACTION_SYNONYMS = {"long": "buy", "short": "sell"}
+    action_word = action_match.group(1).lower()
+    action = _ACTION_SYNONYMS.get(action_word, action_word)
 
     # ---- Symbol -----------------------------------------------------------
     # Filler words that follow BUY/SELL but are NOT the symbol
     _FILLER = {"ON", "AT", "FOR", "SIGNAL", "ALERT", "TRADE", "ENTRY",
-               "THE", "A", "IN", "NOW", "SETUP", "BUY", "SELL"}
+               "THE", "A", "IN", "NOW", "SETUP", "BUY", "SELL", "LONG", "SHORT"}
 
     ticker = ""
 
@@ -146,10 +148,10 @@ def parse_olympus_message(message: str) -> dict:
         if cand not in _FILLER:
             ticker = cand
 
-    # Next: the word immediately after BUY/SELL (Olympus format), skipping fillers
+    # Next: the word immediately after BUY/SELL/LONG/SHORT (Olympus format), skipping fillers
     if not ticker:
         after_action = re.findall(
-            r'\b(?:BUY|SELL)\s+((?:[A-Z0-9]+:)?[A-Z0-9]+)',
+            r'\b(?:BUY|SELL|LONG|SHORT)\s+((?:[A-Z0-9]+:)?[A-Z0-9]+)',
             msg, re.IGNORECASE
         )
         for candidate in after_action:
