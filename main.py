@@ -18,6 +18,7 @@ import logging
 import os
 import re
 import time
+import json
 import threading
 
 from flask import Flask, request, jsonify
@@ -1207,10 +1208,23 @@ def webhook():
     # 1. Parse body — support 3 formats:
     #    A) JSON: {"secret":..., "raw":"{{alert.message}}"}   ← preferred
     #    B) JSON: {"secret":..., "action":"buy", "ticker":..., "price":..., "sl":..., "tp":...}
+    #       (also accepts "side"/"entry"/"tp1" as aliases — some indicators'
+    #       {{alert.message}} already resolves to structured JSON like this)
     #    C) Plain text: raw Olympus message sent directly (no JSON wrapper)
 
     raw_body = request.get_data(as_text=True).strip()
     data = request.get_json(silent=True)
+    if data is None and raw_body.startswith("{"):
+        # TradingView's webhook POST is often sent as text/plain even when
+        # the body is itself JSON (a known TradingView quirk — e.g. an
+        # indicator whose {{alert.message}} resolves to a JSON object), so
+        # Flask's content-type-gated get_json() misses it. Parse it directly.
+        try:
+            candidate = json.loads(raw_body)
+            if isinstance(candidate, dict):
+                data = candidate
+        except (ValueError, TypeError):
+            pass
 
     # Record that *something* arrived (confirms TradingView is reaching us).
     _record_webhook(summary=(raw_body[:60] or "JSON payload"))
@@ -1223,8 +1237,12 @@ def webhook():
         # JSON received
         logger.info(f"Webhook received (JSON): {data}")
 
-        # 2. Verify secret
-        if WEBHOOK_SECRET and data.get("secret") != WEBHOOK_SECRET:
+        # 2. Verify secret — accept it either in the JSON body or, for a
+        #    payload with no "secret" field of its own (e.g. an indicator
+        #    sending its own structured JSON directly, nothing we control),
+        #    via ?secret=... on the webhook URL instead.
+        provided_secret = data.get("secret") or request.args.get("secret")
+        if WEBHOOK_SECRET and provided_secret != WEBHOOK_SECRET:
             logger.warning("Webhook secret mismatch — rejected.")
             _record_webhook(summary="rejected: bad/missing secret", count=False)
             return jsonify({"error": "Unauthorized"}), 401
@@ -1249,11 +1267,11 @@ def webhook():
             sl     = parsed["sl"]
             tp1    = parsed["tp1"]
         else:
-            action = str(data.get("action", "")).lower().strip()
+            action = str(data.get("action") or data.get("side", "")).lower().strip()
             ticker = str(data.get("ticker", "")).upper().strip()
-            entry  = float(data.get("price", 0))
-            sl     = float(data.get("sl",    0))
-            tp1    = float(data.get("tp",    0))
+            entry  = float(data.get("price") or data.get("entry", 0) or 0)
+            sl     = float(data.get("sl", 0) or 0)
+            tp1    = float(data.get("tp") or data.get("tp1", 0) or 0)
 
     elif raw_body:
         # Format C — plain text Olympus message (alert message box not yet
