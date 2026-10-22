@@ -632,10 +632,12 @@ logger.info(f"[Trailing] Background loop started (polling every {TRAILING_POLL_S
 
 @app.route("/", methods=["GET"])
 def health():
-    # RAILWAY_GIT_COMMIT_SHA is auto-injected by Railway on every deploy —
-    # lets you confirm each account's bot is actually running the latest
-    # pushed code (hit / on each deployment and compare to `git log`).
-    commit = os.getenv("RAILWAY_GIT_COMMIT_SHA", "unknown")[:7]
+    # RAILWAY_GIT_COMMIT_SHA (Railway) / RENDER_GIT_COMMIT (Render) are each
+    # auto-injected by their respective host on every deploy — lets you
+    # confirm each account's bot is actually running the latest pushed code
+    # (hit / on each deployment and compare to `git log`), whichever host
+    # it's running on.
+    commit = (os.getenv("RAILWAY_GIT_COMMIT_SHA") or os.getenv("RENDER_GIT_COMMIT") or "unknown")[:7]
     # trade_log defaults to /tmp, which Railway wipes on every redeploy — a
     # non-/tmp path here means TRADE_LOG_PATH is pointed at a mounted
     # Volume and trade history will actually survive future deploys.
