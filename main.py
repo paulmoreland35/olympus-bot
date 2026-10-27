@@ -186,7 +186,6 @@ def _detect_source(raw_body, data):
 # once account balance drops this % below the day's opening balance.
 # e.g. 0.07 = halt if down 7% on the day.
 MAX_DAILY_DRAWDOWN_PCT = float(os.getenv("MAX_DAILY_DRAWDOWN_PCT", "0.07"))
-MAX_OPEN_TRADES        = int(os.getenv("MAX_OPEN_TRADES", "3"))
 
 # How often the trailing loop polls open positions (seconds).
 # 8s balances catching fast scalps against TradeLocker's rate limit on the
@@ -1398,37 +1397,6 @@ def webhook():
     if halted:
         logger.warning(f"[Drawdown] TRADE BLOCKED — {halt_reason}")
         return jsonify({"status": "blocked", "reason": halt_reason}), 403
-
-    # 6b. Max open trades gate + one trade per symbol rule
-    try:
-        open_positions = client.get_open_positions()
-    except Exception as e:
-        logger.warning(f"Could not fetch open positions for risk checks: {e}")
-        open_positions = []
-
-    open_count = len(open_positions)
-    if open_count >= MAX_OPEN_TRADES:
-        msg = (
-            f"Max open trades reached: {open_count}/{MAX_OPEN_TRADES} positions "
-            f"already open — signal for {ticker} blocked."
-        )
-        logger.warning(f"[Risk] {msg}")
-        return jsonify({"status": "blocked", "reason": msg}), 403
-
-    # One trade per symbol — no stacking the same pair
-    open_tickers = []
-    for p in open_positions:
-        name = str(p.get("name") or p.get("symbol") or "").upper()
-        if name:
-            open_tickers.append(name)
-
-    if ticker.upper() in open_tickers:
-        msg = (
-            f"{ticker} already has an open position — "
-            f"waiting for it to close before taking another signal."
-        )
-        logger.warning(f"[Risk] {msg}")
-        return jsonify({"status": "blocked", "reason": msg}), 403
 
     # Per-indicator fixed-point SL/TP — scoped to whichever indicator this
     # signal is actually from (via raw text match or explicit "source"
