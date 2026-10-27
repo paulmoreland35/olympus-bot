@@ -232,6 +232,7 @@ WEBHOOK_STATUS = {
     "last_summary":      None,   # e.g. "BUY NAS100" or "rejected: bad secret"
     "total_received":    0,      # count since this deploy
     "last_accepted_utc": None,   # last webhook that passed auth + parsed OK
+    "last_raw":           None,  # full raw body of the last webhook hit (secret redacted) — debug only, never exposed via /report
 }
 
 
@@ -264,7 +265,7 @@ def _forward_signal(action, ticker, entry, sl, tp1, dry_run):
             logger.warning(f"[Mirror] Forward to {label} ({url}) failed (own trade unaffected): {e}")
 
 
-def _record_webhook(summary: str, accepted: bool = False, count: bool = True):
+def _record_webhook(summary: str, accepted: bool = False, count: bool = True, raw: str = None):
     from datetime import datetime as _dt, timezone as _tz
     now = _dt.now(_tz.utc).isoformat()
     WEBHOOK_STATUS["last_received_utc"] = now
@@ -273,6 +274,14 @@ def _record_webhook(summary: str, accepted: bool = False, count: bool = True):
         WEBHOOK_STATUS["total_received"] += 1
     if accepted:
         WEBHOOK_STATUS["last_accepted_utc"] = now
+    if raw is not None:
+        # Redact the webhook secret wherever it appears (e.g. embedded in a
+        # JSON "secret" field) before storing — this is surfaced by a
+        # secret-protected debug endpoint, but never leak the secret itself.
+        masked = raw
+        if WEBHOOK_SECRET:
+            masked = masked.replace(WEBHOOK_SECRET, "***REDACTED***")
+        WEBHOOK_STATUS["last_raw"] = masked[:2000]
 
 # Start autonomous scanner at module load (runs under gunicorn, not just __main__)
 if os.getenv("TWELVE_DATA_API_KEY"):
@@ -888,7 +897,9 @@ def report():
         out["scanner"] = {"error": str(e)}
 
     # --- Webhook (TradingView alerts) health ---
-    out["webhooks"] = dict(WEBHOOK_STATUS)
+    # last_raw is debug-only (full alert text) — never expose it on this
+    # public, unauthenticated endpoint. Use /last-webhook (secret-protected).
+    out["webhooks"] = {k: v for k, v in WEBHOOK_STATUS.items() if k != "last_raw"}
 
     # --- Local trade log (entries the bot itself placed this deploy) ---
     try:
@@ -1056,6 +1067,24 @@ def quote_test():
     except Exception as e:
         out["error"] = str(e)
     return jsonify(out), 200
+
+@app.route("/last-webhook", methods=["GET"])
+def last_webhook():
+    """
+    Debug endpoint: returns the full raw body of the most recent inbound
+    webhook hit (secret redacted), regardless of whether it parsed or was
+    accepted. Lets us see exactly what a new TradingView indicator actually
+    sends on its first real alert, without needing a screenshot. Secret-
+    protected since /report intentionally omits this (it's unauthenticated).
+    """
+    secret = request.args.get("secret")
+    if WEBHOOK_SECRET and secret != WEBHOOK_SECRET:
+        return jsonify({"error": "Unauthorized"}), 401
+    return jsonify({
+        "last_received_utc": WEBHOOK_STATUS.get("last_received_utc"),
+        "last_summary":      WEBHOOK_STATUS.get("last_summary"),
+        "last_raw":          WEBHOOK_STATUS.get("last_raw"),
+    }), 200
 
 @app.route("/reset-drawdown", methods=["POST", "GET"])
 def reset_drawdown():
@@ -1229,7 +1258,7 @@ def webhook():
             pass
 
     # Record that *something* arrived (confirms TradingView is reaching us).
-    _record_webhook(summary=(raw_body[:60] or "JSON payload"))
+    _record_webhook(summary=(raw_body[:60] or "JSON payload"), raw=raw_body)
 
     # Dry-run flag: runs the WHOLE pipeline (auth, balance, risk, sizing) but
     # NEVER places a real order. Lets us safely test against a live account.
