@@ -1470,7 +1470,11 @@ def webhook():
         sl_dist = abs(entry - sl)
         tp_dist = abs(tp1 - entry)
         rr      = tp_dist / sl_dist if sl_dist > 0 else 0
-        if rr < 1.0:
+        # Tolerance for float rounding — an exact 1:1 signal (e.g. entry/SL/TP
+        # all derived from the same price feed) can compute to 0.999999999...
+        # rather than precisely 1.0, which would otherwise wrongly block
+        # every intentional 1:1 Olympus signal.
+        if rr < 1.0 - 1e-6:
             msg = (
                 f"R:R too low for {ticker}: {rr:.2f} "
                 f"(TP={tp1}, SL={sl}, entry={entry}). "
