@@ -29,6 +29,7 @@ import json
 import logging
 import os
 import threading
+import time
 from datetime import datetime, timezone
 from typing import Optional
 
@@ -56,13 +57,38 @@ class TradeLog:
                     self._trades = json.load(f)
                 logger.info(f"[TradeLog] Loaded {len(self._trades)} trades from {_LOG_PATH}")
         except Exception as e:
-            logger.warning(f"[TradeLog] Could not load trade log: {e}")
+            # Never silently discard a file we can't parse — back it up so
+            # whatever's recoverable in it isn't gone for good, and log
+            # loudly instead of quietly resetting to an empty log (this is
+            # exactly what wiped a day's trade history on 2026-10-28).
+            logger.error(f"[TradeLog] Could not load trade log, starting EMPTY: {e}")
+            try:
+                if os.path.exists(_LOG_PATH):
+                    backup_path = f"{_LOG_PATH}.corrupt.{int(time.time())}"
+                    os.replace(_LOG_PATH, backup_path)
+                    logger.error(f"[TradeLog] Backed up unreadable log to {backup_path}")
+            except Exception as backup_err:
+                logger.error(f"[TradeLog] Could not back up unreadable log: {backup_err}")
             self._trades = []
 
     def _save(self):
+        # Write to a temp file and atomically rename over the real path.
+        # A plain open(path, "w") truncates the file immediately, so a
+        # process kill mid-write (e.g. a redeploy restarting the worker
+        # while a trade flood is hammering this) leaves truncated/invalid
+        # JSON on disk. The next _load() then fails to parse it and
+        # silently resets to an empty list — which is exactly what wiped
+        # out an entire day's trade history (source tagging included) on
+        # 2026-10-28. os.replace() is atomic on the same filesystem, so
+        # the real file is always either the old complete version or the
+        # new complete version, never a partial one.
+        tmp_path = f"{_LOG_PATH}.tmp"
         try:
-            with open(_LOG_PATH, "w") as f:
+            with open(tmp_path, "w") as f:
                 json.dump(self._trades, f, indent=2)
+                f.flush()
+                os.fsync(f.fileno())
+            os.replace(tmp_path, _LOG_PATH)
         except Exception as e:
             logger.warning(f"[TradeLog] Could not save trade log: {e}")
 
