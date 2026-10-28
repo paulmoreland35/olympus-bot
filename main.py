@@ -249,6 +249,14 @@ WEBHOOK_STATUS = {
     "last_raw":           None,  # full raw body of the last webhook hit (secret redacted) — debug only, never exposed via /report
 }
 
+# Short rolling history of raw webhook bodies (secret redacted), newest
+# last — debug only, read via /last-webhook. A single "last_raw" slot
+# means checking only periodically can miss a distinct scanner's format
+# entirely if another one fires in between checks; keeping the last 20
+# lets us see every scanner that has fired recently, not just the latest.
+from collections import deque as _deque
+RAW_WEBHOOK_HISTORY = _deque(maxlen=20)
+
 
 def _forward_signal(action, ticker, entry, sl, tp1, dry_run):
     """Relay an accepted signal to every partner bot (mirror). Best-effort —
@@ -295,7 +303,9 @@ def _record_webhook(summary: str, accepted: bool = False, count: bool = True, ra
         masked = raw
         if WEBHOOK_SECRET:
             masked = masked.replace(WEBHOOK_SECRET, "***REDACTED***")
-        WEBHOOK_STATUS["last_raw"] = masked[:2000]
+        masked = masked[:2000]
+        WEBHOOK_STATUS["last_raw"] = masked
+        RAW_WEBHOOK_HISTORY.append({"received_utc": now, "raw": masked})
 
 # Start autonomous scanner at module load (runs under gunicorn, not just __main__)
 if os.getenv("TWELVE_DATA_API_KEY"):
@@ -1125,9 +1135,12 @@ def last_webhook():
     """
     Debug endpoint: returns the full raw body of the most recent inbound
     webhook hit (secret redacted), regardless of whether it parsed or was
-    accepted. Lets us see exactly what a new TradingView indicator actually
-    sends on its first real alert, without needing a screenshot. Secret-
-    protected since /report intentionally omits this (it's unauthenticated).
+    accepted, plus a short rolling history (last 20) so a periodic check
+    doesn't miss a distinct scanner's format just because another one
+    fired more recently. Lets us see exactly what any TradingView
+    indicator actually sends on its first real alert, without needing a
+    screenshot. Secret-protected since /report intentionally omits this
+    (it's unauthenticated).
     """
     secret = request.args.get("secret")
     if WEBHOOK_SECRET and secret != WEBHOOK_SECRET:
@@ -1136,6 +1149,7 @@ def last_webhook():
         "last_received_utc": WEBHOOK_STATUS.get("last_received_utc"),
         "last_summary":      WEBHOOK_STATUS.get("last_summary"),
         "last_raw":          WEBHOOK_STATUS.get("last_raw"),
+        "history":           list(RAW_WEBHOOK_HISTORY),
     }), 200
 
 @app.route("/reset-drawdown", methods=["POST", "GET"])
