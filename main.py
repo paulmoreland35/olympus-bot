@@ -573,13 +573,27 @@ def _trailing_loop():
             # manager triggers on the real price, not one inferred from P&L +
             # an assumed contract size. Fail-safe: if the quote fetch fails,
             # leave it unset and the manager falls back to its P&L derivation.
+            #
+            # Fetch ONE quote per unique ticker, not per position — with the
+            # per-symbol stacking limit removed, many open positions can
+            # share the same ticker (e.g. a dozen NAS100 trades at once), and
+            # fetching the same symbol's price redundantly for each was what
+            # scaled this loop's API call count with open-position count
+            # rather than with instrument count, overwhelming TradeLocker's
+            # rate limit on 2026-10-28 and starving every trade's position
+            # linking of working lookups for the rest of the day.
+            quote_cache: dict[str, float] = {}
             for p in positions:
-                try:
-                    px = client.get_quote(p.get("name", ""))
-                    if px and px > 0:
-                        p["currentPrice"] = px
-                except Exception:
-                    pass
+                name = p.get("name", "")
+                if name not in quote_cache:
+                    try:
+                        px = client.get_quote(name)
+                        quote_cache[name] = px if px and px > 0 else None
+                    except Exception:
+                        quote_cache[name] = None
+                px = quote_cache.get(name)
+                if px:
+                    p["currentPrice"] = px
 
             # ---- Detect closed positions ----
             for pid, last_pos in prev_pos_map.items():
