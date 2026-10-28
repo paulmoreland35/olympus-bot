@@ -463,6 +463,30 @@ def _is_halted(current_balance: float) -> tuple[bool, str]:
                 f"Manual trades excluded. No new bot trades until tomorrow."
             )
             return True, reason
+
+        # Hard backstop — bot-only tracking depends entirely on every trade
+        # successfully linking to its broker position (see
+        # _link_trade_position). If linking fails en masse (e.g. the
+        # broker rate-limiting under heavy trade volume, as happened on
+        # 2026-10-28), bot_pnl silently stays at 0 regardless of real
+        # losses, and the check above never fires no matter how much the
+        # account actually loses. Independent of bot-only tracking, halt
+        # anyway if the WHOLE account has fallen further than a wide
+        # multiple of the normal limit — wide enough to never trip on
+        # ordinary manual trading, but tight enough to catch exactly the
+        # silent-tracking-failure scenario that let a 35% loss go uncaught.
+        hard_mult = float(os.getenv("HARD_BACKSTOP_MULT", "2.5"))
+        hard_loss_pct = (open_bal - current_balance) / open_bal
+        if hard_loss_pct >= limit * hard_mult:
+            reason = (
+                f"HARD BACKSTOP: whole-account loss {hard_loss_pct*100:.1f}% today "
+                f"exceeds {hard_mult:.1f}x the normal {limit*100:.0f}% bot-only limit, "
+                f"even though tracked bot P&L (${bot_pnl:,.2f}) didn't trip it — "
+                f"likely a position-linking failure masking real losses. "
+                f"Day-open: ${open_bal:,.2f} | Now: ${current_balance:,.2f}. "
+                f"No new trades until tomorrow."
+            )
+            return True, reason
         return False, ""
 
     loss_pct = (open_bal - current_balance) / open_bal
