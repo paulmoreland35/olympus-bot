@@ -128,12 +128,15 @@ def _raw_text_aliases_for(name: str) -> list:
 def _lookup_named_points_override(raw_body: str, data):
     """
     Find a per-indicator fixed SL/TP point override for this signal. Matched
-    by an explicit "source" field in the JSON payload, or by a configured
-    <NAME> (or one of its raw-text aliases) appearing case-insensitively in
-    the raw alert text. Returns (sl_points, tp_points, name) or None if
-    nothing is configured/matches.
+    by "?source=" on the webhook URL, an explicit "source" field in the
+    JSON payload, or by a configured <NAME> (or one of its raw-text
+    aliases) appearing case-insensitively in the raw alert text. Returns
+    (sl_points, tp_points, name) or None if nothing is configured/matches.
     """
-    explicit_source = str(data.get("source", "")).strip().upper() if isinstance(data, dict) else ""
+    explicit_source = (
+        request.args.get("source", "").strip().upper()
+        or (str(data.get("source", "")).strip().upper() if isinstance(data, dict) else "")
+    )
     raw_lower = raw_body.lower()
 
     names = {key[len("SL_POINTS_"):] for key in os.environ if key.startswith("SL_POINTS_")}
@@ -159,11 +162,23 @@ def _lookup_named_points_override(raw_body: str, data):
 def _detect_source(raw_body, data):
     """
     Best-effort indicator/scanner name for per-source P&L attribution.
-    Priority: explicit "source" field in JSON  ->  the indicator name that
-    prefixes the raw alert text (everything before the first BUY/SELL)  ->
-    "JSON/manual" for source-less structured alerts  ->  "unknown".
-    Add "source":"<name>" to a TradingView alert's JSON for exact tagging.
+    Priority: "?source=" on the webhook URL  ->  explicit "source" field
+    in JSON  ->  the indicator name that prefixes the raw alert text
+    (everything before the first BUY/SELL)  ->  "JSON/manual" for
+    source-less structured alerts  ->  "unknown".
+
+    The URL param is the one that works for EVERY alert type, including
+    indicators (e.g. Optimal Scanner, Elite Smart Money Scanner) that call
+    alert() directly in Pine — TradingView ignores whatever's typed in
+    the Message box for those, so a JSON "source" field can never reach
+    us; only the webhook URL itself is under your control there. Add
+    "&source=<name>" to that alert's webhook URL for exact tagging
+    regardless of its alert type.
     """
+    url_source = request.args.get("source")
+    if url_source:
+        return url_source.strip()[:40] or "unknown"
+
     text = ""
     if isinstance(data, dict):
         if data.get("source"):
