@@ -1411,6 +1411,37 @@ def webhook():
         return jsonify({"status": "blocked",
                         "reason": "LONGS_ONLY is set — SELL signals are ignored."}), 200
 
+    # 4c. Signal-quality filter — some indicators (e.g. SD AI) attach a
+    #     confidence "grade" (A/B/C/D/F) and/or numeric "score" to their
+    #     JSON alert, rating how strong that particular signal is. Gate on
+    #     it when configured, so only the higher-quality signals from a
+    #     scanner actually get traded instead of every signal it fires.
+    #     No-op (nothing filtered) unless both the alert carries the field
+    #     AND the matching MIN_* env var is set.
+    if isinstance(data, dict):
+        min_score = os.getenv("MIN_SIGNAL_SCORE")
+        if min_score and data.get("score") is not None:
+            try:
+                score = float(data["score"])
+                if score < float(min_score):
+                    msg = f"score {score} below MIN_SIGNAL_SCORE={min_score}"
+                    logger.info(f"[Filter] {ticker} signal rejected — {msg}.")
+                    _record_webhook(summary=f"blocked: low score ({ticker})", count=False)
+                    return jsonify({"status": "blocked", "reason": msg}), 200
+            except (TypeError, ValueError):
+                pass
+
+        min_grade = os.getenv("MIN_SIGNAL_GRADE")
+        if min_grade and data.get("grade"):
+            rank = {"A": 0, "B": 1, "C": 2, "D": 3, "F": 4}
+            got  = rank.get(str(data["grade"]).strip().upper())
+            need = rank.get(min_grade.strip().upper())
+            if got is not None and need is not None and got > need:
+                msg = f"grade {data['grade']} below MIN_SIGNAL_GRADE={min_grade}"
+                logger.info(f"[Filter] {ticker} signal rejected — {msg}.")
+                _record_webhook(summary=f"blocked: low grade ({ticker})", count=False)
+                return jsonify({"status": "blocked", "reason": msg}), 200
+
     # Alert accepted — auth passed and message parsed into a valid signal.
     # count=False: this request was already counted on arrival above.
     _record_webhook(summary=f"{action.upper()} {ticker}", accepted=True, count=False)
