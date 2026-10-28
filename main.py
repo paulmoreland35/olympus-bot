@@ -1330,6 +1330,12 @@ def webhook():
     # NEVER places a real order. Lets us safely test against a live account.
     dry_run = bool(data.get("dry_run")) if data else False
 
+    # Confidence/quality score for the signal-quality filter below (4c) —
+    # from the JSON body's "score" field (checked there directly), or from
+    # the Olympus-format parser if the message carries one in plain text
+    # (e.g. "... | Confluence: 65%"). None when nothing provided a score.
+    signal_score = None
+
     if data:
         # JSON received
         logger.info(f"Webhook received (JSON): {data}")
@@ -1363,6 +1369,7 @@ def webhook():
             entry  = parsed["entry"]
             sl     = parsed["sl"]
             tp1    = parsed["tp1"]
+            signal_score = parsed.get("score")
         else:
             action = str(data.get("action") or data.get("side", "")).lower().strip()
             ticker = str(data.get("ticker", "")).upper().strip()
@@ -1392,6 +1399,7 @@ def webhook():
         entry  = parsed["entry"]
         sl     = parsed["sl"]
         tp1    = parsed["tp1"]
+        signal_score = parsed.get("score")
 
     else:
         logger.warning("Empty request body received.")
@@ -1425,26 +1433,33 @@ def webhook():
         return jsonify({"status": "blocked",
                         "reason": "LONGS_ONLY is set — SELL signals are ignored."}), 200
 
-    # 4c. Signal-quality filter — some indicators (e.g. SD AI) attach a
-    #     confidence "grade" (A/B/C/D/F) and/or numeric "score" to their
-    #     JSON alert, rating how strong that particular signal is. Gate on
-    #     it when configured, so only the higher-quality signals from a
-    #     scanner actually get traded instead of every signal it fires.
-    #     No-op (nothing filtered) unless both the alert carries the field
-    #     AND the matching MIN_* env var is set.
-    if isinstance(data, dict):
-        min_score = os.getenv("MIN_SIGNAL_SCORE")
-        if min_score and data.get("score") is not None:
-            try:
-                score = float(data["score"])
-                if score < float(min_score):
-                    msg = f"score {score} below MIN_SIGNAL_SCORE={min_score}"
-                    logger.info(f"[Filter] {ticker} signal rejected — {msg}.")
-                    _record_webhook(summary=f"blocked: low score ({ticker})", count=False)
-                    return jsonify({"status": "blocked", "reason": msg}), 200
-            except (TypeError, ValueError):
-                pass
+    # 4c. Signal-quality filter — some indicators attach a confidence
+    #     "grade" (A/B/C/D/F, e.g. SD AI's JSON) and/or numeric "score" to
+    #     their alert, rating how strong that particular signal is —
+    #     either as a JSON field or embedded in plain text (e.g. ICT
+    #     Confluence Scanner's "... | Confluence: 65%", surfaced as
+    #     signal_score by the parser). Gate on it when configured, so only
+    #     the higher-quality signals from a scanner actually get traded
+    #     instead of every signal it fires. No-op (nothing filtered) unless
+    #     both the alert carries the field AND the matching MIN_* env var
+    #     is set.
+    effective_score = signal_score
+    if effective_score is None and isinstance(data, dict):
+        effective_score = data.get("score")
 
+    min_score = os.getenv("MIN_SIGNAL_SCORE")
+    if min_score and effective_score is not None:
+        try:
+            score = float(effective_score)
+            if score < float(min_score):
+                msg = f"score {score} below MIN_SIGNAL_SCORE={min_score}"
+                logger.info(f"[Filter] {ticker} signal rejected — {msg}.")
+                _record_webhook(summary=f"blocked: low score ({ticker})", count=False)
+                return jsonify({"status": "blocked", "reason": msg}), 200
+        except (TypeError, ValueError):
+            pass
+
+    if isinstance(data, dict):
         min_grade = os.getenv("MIN_SIGNAL_GRADE")
         if min_grade and data.get("grade"):
             rank = {"A": 0, "B": 1, "C": 2, "D": 3, "F": 4}

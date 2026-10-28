@@ -216,6 +216,14 @@ def parse_olympus_message(message: str) -> dict:
     tp3_match = re.search(r'TP3[:\s]+([\d.]+)', msg, re.IGNORECASE)
     tp3 = float(tp3_match.group(1)) if tp3_match else None
 
+    # ---- Confidence score (OPTIONAL) --------------------------------------
+    # Some indicators (e.g. ICT Confluence Scanner: "... | Confluence: 65%")
+    # embed a quality score directly in the plain-text message rather than
+    # structured JSON. Surface it the same way as a JSON "score" field so
+    # the webhook's MIN_SIGNAL_SCORE filter can gate on it too.
+    score_match = re.search(r'Confluence[:\s]+([\d.]+)%?', msg, re.IGNORECASE)
+    score = float(score_match.group(1)) if score_match else None
+
     result = {
         "action": action,
         "ticker": ticker,
@@ -224,6 +232,7 @@ def parse_olympus_message(message: str) -> dict:
         "tp1":    tp1,
         "tp2":    tp2,
         "tp3":    tp3,
+        "score":  score,
     }
 
     logger.info(
